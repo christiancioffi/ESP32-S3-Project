@@ -1,0 +1,3 @@
+# Ignora tutto nella cartella Client tranne client.py
+Client/*
+!Client/client.py
