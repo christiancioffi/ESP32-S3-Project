@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import base64
 import json
 import time
+import os
 
 app = Flask(__name__)
 
@@ -15,9 +16,12 @@ def audio():
         wav_data_base64 = chunk["data"]
         wav_data_bytes = base64.b64decode(wav_data_base64)
 
-        timestamp = time.time() #Prendere dal chunk ricevuto (chunk[timestamp])
-        filename = "sample_"+str(timestamp)+".wav"
-        with open(filename, "wb") as f:
+        os.makedirs("Samples", exist_ok=True)
+
+        filename = f"sample_{chunk['timestamp']}.wav"
+        filepath = os.path.join("Samples", filename)
+
+        with open(filepath, "wb") as f:
             f.write(wav_data_bytes)
 
         return jsonify({"status": "ok", "file": filename})
