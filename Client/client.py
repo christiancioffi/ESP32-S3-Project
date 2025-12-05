@@ -4,20 +4,32 @@ from machine import Pin, I2S, SDCard, idle
 import network
 import urequests as requests
 import json, binascii
-import time
+import ntptime, time
 
-def configureWiFiConnection():
-    SSID='SSID'     #TO-DO: leggere le credenziali da file locale
+def getCurrentDate():
+    timestamp=time.localtime(time.time()+3600)
+    return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(timestamp[0], timestamp[1], timestamp[2], timestamp[3], timestamp[4], timestamp[5])
+
+def setupWiFiConnection():
+    SSID='SSID'    #TO-DO: copiare le credenziali da file
     KEY='KEY'
-    wlan = network.WLAN(network.WLAN.IF_STA)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print('connecting to network...')
-        wlan.connect(SSID, KEY)
-        while not wlan.isconnected():
-            idle()
-    print('network config:', wlan.ipconfig('addr4'))
-    #wlan.disconnect()
+    try:
+        wlan = network.WLAN(network.WLAN.IF_STA)
+        wlan.active(True)
+        if not wlan.isconnected():
+            print('connecting to network...')
+            wlan.connect(SSID, KEY)
+            while not wlan.isconnected():
+                idle()
+        print('Network config:', wlan.ipconfig('addr4'))
+        #wlan.disconnect()
+        ntptime.settime()
+        print("["+getCurrentDate()+"] "+"Wi-Fi configuration completed")
+        return True
+    except Exception as e:
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        print("Wi-Fi configuration not completed")
+        return False
 
 def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
     datasize = num_samples * num_channels * bitsPerSample // 8
@@ -41,6 +53,8 @@ def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
 def getSingleAudioChunk():
     #sd = SDCard(slot=2)  # sck=18, mosi=23, miso=19, cs=5
     #os.mount(sd, "/sd")
+
+    # MICROPHONE = Adafruit I2S MEMS Microphone Breakout - SPH0645LM4H
 
     # ======= I2S CONFIGURATION =======
     SCK_PIN = 4
@@ -124,18 +138,19 @@ def getSingleAudioChunk():
 
         print("==========  DONE RECORDING ==========")
     except (KeyboardInterrupt, Exception) as e:
-        print("caught exception {} {}".format(type(e).__name__, e))
-
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        wav_data=bytes()
+    finally:
+        audio_in.deinit()
     # cleanup
     #wav.close()
     #os.umount("/sd")
     #sd.deinit()
-    audio_in.deinit()
     return wav_data
 
 def getCompleteChunk(chunk):
     wav_data_b64=binascii.b2a_base64(chunk).decode()
-    timestamp=str(time.time())  #TO-DO
+    timestamp=str(time.time()+3600)
     nodeID=str(0)   #TO-DO
     batteryLevel="100%" #TO-DO
     SNR=str(0)  #TO-DO
@@ -151,12 +166,17 @@ def getCompleteChunk(chunk):
 
 def sendChunkToServer(chunk):
     data=getCompleteChunk(chunk)
-    response=requests.post(url="http://192.168.1.11/audio", json=json.dumps(data))
-    print(response.text)
+    print("["+getCurrentDate()+"] "+"Sending chunk to the server")
+    try:
+        response=requests.post(url="http://192.168.1.11/audio", json=json.dumps(data))
+        print(response.text)
+    except Exception as e:
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        print("["+getCurrentDate()+"] "+"Chunk not sent")
 
-configureWiFiConnection()
-chunk=getSingleAudioChunk()
-sendChunkToServer(chunk)
-
+if setupWiFiConnection():
+    chunk=getSingleAudioChunk()
+    if len(chunk)>0 :
+        sendChunkToServer(chunk)
 
 
