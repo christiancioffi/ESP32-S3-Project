@@ -1,17 +1,36 @@
-#import os
 from machine import Pin
 from machine import Pin, I2S, SDCard, idle
 import network
 import urequests as requests
-import json, binascii
 import ntptime, time
+import math
+import struct
+
+ENDPOINT="http://192.168.1.4/audio"
+NODEID=str(0)  #ID del nodo
+
+class Metadata:
+    def __init__(self, tmst: int, noId: str, blvl: float, rmsv: float):
+        self.tmst = tmst
+        self.noId = noId
+        self.blvl = blvl
+        self.rmsv = rmsv
+
+    def to_dict(self) -> dict:
+        return {
+            "tmst": self.tmst,
+            "noId": self.noId,
+            "blvl": self.blvl,
+            "rmsv": self.rmsv
+        }
+
 
 def getCurrentDate():
     timestamp=time.localtime(time.time()+3600)
     return "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(timestamp[0], timestamp[1], timestamp[2], timestamp[3], timestamp[4], timestamp[5])
 
 def setupWiFiConnection():
-    SSID='SSID'    #TO-DO: copiare le credenziali da file
+    SSID='SSID'
     KEY='KEY'
     try:
         wlan = network.WLAN(network.WLAN.IF_STA)
@@ -31,23 +50,112 @@ def setupWiFiConnection():
         print("Wi-Fi configuration not completed")
         return False
 
-def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples):
+def calculateRMS(audio_bytes, bits_per_sample, num_channels):
+    bytes_per_sample = bits_per_sample // 8
+    frame_size = bytes_per_sample * num_channels
+    num_frames = len(audio_bytes) // frame_size
+
+    if num_frames == 0:
+        return 0.0
+
+    sum_squares = 0.0
+    sample_count = 0
+
+    for i in range(0, num_frames * frame_size, bytes_per_sample):
+        sample_bytes = audio_bytes[i:i + bytes_per_sample]
+
+        if bits_per_sample == 8:
+            # 8-bit PCM è unsigned
+            sample = sample_bytes[0] - 128  # trasforma in signed (-128..127)
+
+        elif bits_per_sample == 16:
+            # little-endian signed short
+            sample = struct.unpack("<h", sample_bytes)[0]
+
+        elif bits_per_sample == 24:
+            # little-endian signed 24-bit
+            # aggiungiamo un byte di estensione di segno manuale
+            b = sample_bytes
+            if b[2] & 0x80:
+                b += b'\xff'  # se il bit più alto è 1 -> negativo
+            else:
+                b += b'\x00'  # altrimenti positivo
+            sample = struct.unpack("<i", b)[0] >> 8
+
+        elif bits_per_sample == 32:
+            # little-endian signed int
+            sample = struct.unpack("<i", sample_bytes)[0]
+
+        else:
+            raise ValueError("bits_per_sample non supportato")
+
+        sum_squares += sample * sample
+        sample_count += 1
+
+    mean_square = sum_squares / sample_count
+    rmsv=math.sqrt(mean_square)
+    print("RMS value calculated:", rmsv)
+    return rmsv
+
+def getMetadata(chunk, bits_per_sample, num_channels):
+    timestamp=str(time.time()+3600)
+    nodeID=NODEID
+    batteryLevel="100%" #TO-DO
+    rmsv=calculateRMS(chunk, bits_per_sample, num_channels)
+    return Metadata(
+         tmst=timestamp,
+         noId=nodeID,
+         blvl=batteryLevel,
+         rmsv=rmsv).to_dict()
+
+def create_wav_header(sampleRate, bitsPerSample, num_channels, num_samples, metadata=None):
     datasize = num_samples * num_channels * bitsPerSample // 8
-    o = bytes("RIFF", "ascii")  # (4byte) Marks file as RIFF
-    o += (datasize + 36).to_bytes(
-        4, "little"
-    )  # (4byte) File size in bytes excluding this and RIFF marker
-    o += bytes("WAVE", "ascii")  # (4byte) File type
-    o += bytes("fmt ", "ascii")  # (4byte) Format Chunk Marker
-    o += (16).to_bytes(4, "little")  # (4byte) Length of above format data
-    o += (1).to_bytes(2, "little")  # (2byte) Format type (1 - PCM)
-    o += (num_channels).to_bytes(2, "little")  # (2byte)
-    o += (sampleRate).to_bytes(4, "little")  # (4byte)
-    o += (sampleRate * num_channels * bitsPerSample // 8).to_bytes(4, "little")  # (4byte)
-    o += (num_channels * bitsPerSample // 8).to_bytes(2, "little")  # (2byte)
-    o += (bitsPerSample).to_bytes(2, "little")  # (2byte)
-    o += bytes("data", "ascii")  # (4byte) Data Chunk Marker
-    o += (datasize).to_bytes(4, "little")  # (4byte) Data size in bytes
+
+    o = b"RIFF"
+    filesize_pos = len(o)
+    o += (0).to_bytes(4, "little")  # placeholder dimensione RIFF
+    o += b"WAVE"
+
+    # fmt chunk (PCM)
+    o += b"fmt "
+    o += (16).to_bytes(4, "little")
+    o += (1).to_bytes(2, "little")  # AudioFormat = PCM
+    o += num_channels.to_bytes(2, "little")
+    o += sampleRate.to_bytes(4, "little")
+    o += (sampleRate * num_channels * bitsPerSample // 8).to_bytes(4, "little")
+    o += (num_channels * bitsPerSample // 8).to_bytes(2, "little")
+    o += bitsPerSample.to_bytes(2, "little")
+
+    # LIST / INFO chunk (metadati)
+    if metadata:
+        info_data = b"INFO"
+
+        for key, value in metadata.items():
+            print("Adding metadata key:", key, "value:", value)
+            if len(key) != 4:
+                raise ValueError("Le chiavi INFO devono essere di 4 caratteri")
+
+            data = str(value).encode("ascii") + b"\x00"
+
+            if len(data) % 2 == 1:
+                data += b"\x00"  # padding a 2 byte
+
+            info_data += key.encode("ascii")
+            info_data += len(data).to_bytes(4, "little")
+            info_data += data
+
+        o += b"LIST"
+        o += len(info_data).to_bytes(4, "little")
+        o += info_data
+
+    # data chunk
+    o += b"data"
+    o += datasize.to_bytes(4, "little")
+
+    # aggiorna dimensione RIFF (file_size - 8)
+    filesize = len(o) - 8 + datasize
+    o = o[:filesize_pos] + filesize.to_bytes(4, "little") + o[filesize_pos + 4:]
+
     return o
 
 def getSingleAudioChunk():
@@ -62,7 +170,6 @@ def getSingleAudioChunk():
     SD_PIN = 18
     I2S_ID = 0
     BUFFER_LENGTH_IN_BYTES = 40000
-    # ======= I2S CONFIGURATION =======
 
     # ======= AUDIO CONFIGURATION =======
     #WAV_FILE = "mic.wav"
@@ -70,7 +177,6 @@ def getSingleAudioChunk():
     WAV_SAMPLE_SIZE_IN_BITS = 32        #Slot bit width
     FORMAT = I2S.MONO
     SAMPLE_RATE_IN_HZ = 22_050
-    # ======= AUDIO CONFIGURATION =======
 
     format_to_channels = {I2S.MONO: 1, I2S.STEREO: 2}
     NUM_CHANNELS = format_to_channels[FORMAT]
@@ -79,19 +185,9 @@ def getSingleAudioChunk():
         RECORD_TIME_IN_SECONDS * SAMPLE_RATE_IN_HZ * WAV_SAMPLE_SIZE_IN_BYTES * NUM_CHANNELS
     )
 
-
+    wav_data=bytes()
 
     #wav = open("/sd/{}".format(WAV_FILE), "wb")
-
-    # create header for WAV file and write to SD card
-    wav_header = create_wav_header(
-        SAMPLE_RATE_IN_HZ,
-        WAV_SAMPLE_SIZE_IN_BITS,
-        NUM_CHANNELS,
-        SAMPLE_RATE_IN_HZ * RECORD_TIME_IN_SECONDS,
-    )
-    #num_bytes_written = wav.write(wav_header)
-    wav_data=wav_header
 
     audio_in = I2S(
         I2S_ID,
@@ -146,29 +242,26 @@ def getSingleAudioChunk():
     #wav.close()
     #os.umount("/sd")
     #sd.deinit()
-    return wav_data
 
-def getCompleteChunk(chunk):
-    wav_data_b64=binascii.b2a_base64(chunk).decode()
-    timestamp=str(time.time()+3600)
-    nodeID=str(0)   #TO-DO
-    batteryLevel="100%" #TO-DO
-    SNR=str(0)  #TO-DO
-    RSM=str(0)  #TO-DO
-    return {
-        "data": wav_data_b64,
-        "timestamp": timestamp,
-        "nodeId": nodeID,
-        "batteryLevel": batteryLevel,
-        "snr": SNR,
-        "rsm": RSM
-    }
+    metadata=getMetadata(wav_data, WAV_SAMPLE_SIZE_IN_BITS, NUM_CHANNELS)
+
+    # create header for WAV file and write to SD card
+    wav_header = create_wav_header(
+        SAMPLE_RATE_IN_HZ,
+        WAV_SAMPLE_SIZE_IN_BITS,
+        NUM_CHANNELS,
+        SAMPLE_RATE_IN_HZ * RECORD_TIME_IN_SECONDS,
+        metadata
+    )
+    
+    wav_chunk=wav_header+wav_data
+
+    return wav_chunk
 
 def sendChunkToServer(chunk):
-    data=getCompleteChunk(chunk)
     print("["+getCurrentDate()+"] "+"Sending chunk to the server")
     try:
-        response=requests.post(url="http://192.168.1.11/audio", json=json.dumps(data))
+        response = requests.post(url=ENDPOINT,data=chunk,headers={"Content-Type": "audio/wav","Content-Length": str(len(chunk))})
         print(response.text)
     except Exception as e:
         print("Caught exception {} {}".format(type(e).__name__, e))
