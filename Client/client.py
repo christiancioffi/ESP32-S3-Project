@@ -1,13 +1,25 @@
 from machine import Pin
-from machine import Pin, I2S, SDCard, idle
+from machine import Pin, I2S, SDCard, idle, UART
 import network
 import urequests as requests
 import ntptime, time
 import math
 import struct
+import sys
+from eg91_sender_v3 import Eg91SenderV3 
+import ujson
+import os
+import esp
 
-ENDPOINT="http://192.168.1.4/audio"
+ENDPOINT="https://webhook.site/a8897191-bff0-4267-88eb-803b739cf5d9/audio"
 NODEID=str(0)  #ID del nodo
+LTE_RESET_PIN = 3
+LTE_POWER_PIN = 4
+UART_TX_PIN = 41
+UART_RX_PIN = 42
+SCK_PIN = 46
+WS_PIN = 47
+SD_PIN = 48
 
 class Metadata:
     def __init__(self, tmst: int, noId: str, blvl: float, rmsv: float):
@@ -36,7 +48,7 @@ def setupWiFiConnection():
         wlan = network.WLAN(network.WLAN.IF_STA)
         wlan.active(True)
         if not wlan.isconnected():
-            print('connecting to network...')
+            print('Connecting to network...')
             wlan.connect(SSID, KEY)
             while not wlan.isconnected():
                 idle()
@@ -48,6 +60,71 @@ def setupWiFiConnection():
     except Exception as e:
         print("Caught exception {} {}".format(type(e).__name__, e))
         print("Wi-Fi configuration not completed")
+        return False
+
+def setupLTEConnection():
+    try:
+        config={}
+        with open("config.json") as f:
+            config = ujson.loads(f.read())
+        
+        uart = UART(1, baudrate=115200, tx=Pin(UART_TX_PIN), rx=Pin(UART_RX_PIN), timeout=3000)
+
+        eg91 = Eg91SenderV3(uart, config)
+
+        # Power cycle
+        Pin(LTE_POWER_PIN, Pin.OUT).on()
+        time.sleep(1)
+        Pin(LTE_POWER_PIN, Pin.OUT).off()
+        time.sleep(15)
+
+        if eg91.enable():
+            print(f"Connection status: {eg91.get_mqtt_connection_status()}")
+            print(f"Reading data from topic: {eg91.get_mqtt_data()}")
+            print(f"Current time: {eg91.get_time()}")
+            return eg91
+        else:
+            print("Failed to enable EG91 sender\n")
+        
+        return None
+    except OSError:
+        print("Configuration file not found")
+        config = {}
+        return None
+    except Exception as e:
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        print("Failed to setup LTE connection")
+        return None
+    
+
+def closeLTEConnection(eg91):
+    try:
+        eg91.disable()
+        Pin(LTE_POWER_PIN, Pin.OUT).on()
+        time.sleep(1)
+        Pin(LTE_POWER_PIN, Pin.OUT).off()
+        time.sleep(15)
+        print("LTE connection closed successfully")
+    except Exception as e:
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        print("Failed to close LTE connection")
+
+def isNetworkQualityGood(eg91):
+    try:
+        signal_strength_values = eg91.get_signal_quality()
+        if signal_strength_values is None:
+            return False
+        else:
+            rssi, rsrp, rsrq, sinr = signal_strength_values
+            if rsrp >= -95 and sinr >= 10 and rsrq >= -15:
+                print("Network quality is good")
+                return True
+            else:
+                print("Network quality is poor")
+                return False
+    except Exception as e:
+        print("Caught exception {} {}".format(type(e).__name__, e))
+        print("Failed to assess network quality")
         return False
 
 def calculateRMS(audio_bytes, bits_per_sample, num_channels):
@@ -165,9 +242,6 @@ def getSingleAudioChunk():
     # MICROPHONE = Adafruit I2S MEMS Microphone Breakout - SPH0645LM4H
 
     # ======= I2S CONFIGURATION =======
-    SCK_PIN = 4
-    WS_PIN = 5
-    SD_PIN = 18
     I2S_ID = 0
     BUFFER_LENGTH_IN_BYTES = 40000
 
@@ -176,7 +250,8 @@ def getSingleAudioChunk():
     RECORD_TIME_IN_SECONDS = 5  #10
     WAV_SAMPLE_SIZE_IN_BITS = 32        #Slot bit width
     FORMAT = I2S.MONO
-    SAMPLE_RATE_IN_HZ = 22_050
+    SAMPLE_RATE_IN_HZ = 16_000  #Sampling rate = 16kHz
+
 
     format_to_channels = {I2S.MONO: 1, I2S.STEREO: 2}
     NUM_CHANNELS = format_to_channels[FORMAT]
@@ -258,18 +333,23 @@ def getSingleAudioChunk():
 
     return wav_chunk
 
-def sendChunkToServer(chunk):
+def sendChunkToServer(sender, chunk):
     print("["+getCurrentDate()+"] "+"Sending chunk to the server")
     try:
-        response = requests.post(url=ENDPOINT,data=chunk,headers={"Content-Type": "audio/wav","Content-Length": str(len(chunk))})
-        print(response.text)
+        response = sender.https_post_request(url=ENDPOINT,body=chunk,content_type="application/octet-stream")
+        #response = sender.https_get_request(url=ENDPOINT)
+        print("[APP] Response:", response)
     except Exception as e:
         print("Caught exception {} {}".format(type(e).__name__, e))
         print("["+getCurrentDate()+"] "+"Chunk not sent")
 
-if setupWiFiConnection():
+
+LTESender=setupLTEConnection()
+if LTESender:
     chunk=getSingleAudioChunk()
-    if len(chunk)>0 :
-        sendChunkToServer(chunk)
+    if len(chunk)>0 and isNetworkQualityGood(LTESender):
+        sendChunkToServer(LTESender, chunk)
+        
+    closeLTEConnection(LTESender)
 
 
