@@ -3,6 +3,7 @@ import ujson
 import _thread
 from machine import UART, Pin
 import esp32
+import re
 
 #TODO: save ip addr and send via log
 class Eg91SenderV3():
@@ -109,6 +110,7 @@ class Eg91SenderV3():
             self._mqtt_connected = False
             self._network_registered = False
             self._received_mqtt_data = {}
+            self._pdp_context_active = False
 
             # Initialize interrupt-based communication
             self._init_uart_interrupt()
@@ -385,8 +387,6 @@ class Eg91SenderV3():
             for attempt in range(max_retries):
                 try:
 
-                    # Configuration of the PDP Context
-
                     self._connection_state = self.STATE_CONNECTING
 
                     # Clear buffers
@@ -427,6 +427,8 @@ class Eg91SenderV3():
                             raise RuntimeError("Network registration failed")
 
                     self.log_info("Successfully connected to the cellular network")
+
+                    self._activate_pdp_context()
                     
                     # Initialization and configuration of the MQTT connection
 
@@ -448,16 +450,6 @@ class Eg91SenderV3():
                 
                 except Exception as e:
                     self.log_error(f"Enable attempt {attempt + 1} failed: {e}")
-
-                    if attempt < max_retries - 1:
-                        self.log_info(
-                            f"Retrying enable sequence (attempt {attempt + 2}/{max_retries})")
-                        time.sleep(2)
-                        # Try recovery
-                        self._recovery_sequence()
-                    else:
-                        self._connection_state = self.STATE_ERROR
-                        return False
                     
         return False
     
@@ -491,8 +483,6 @@ class Eg91SenderV3():
         response, success = self._send_command_interrupt("AT+QIACT?")
         if not success or "+QIACT:" not in response:
             raise RuntimeError("Context verification failed")
-        
-        return True
 
     def _deactivate_pdp_context(self) -> bool:
         # Deactivate context
@@ -500,8 +490,7 @@ class Eg91SenderV3():
 
         if not success:
             self.log_info("Failed to deactivate context cleanly")
-        
-        return success
+            raise RuntimeError("Context deactivation failed")      
 
     def initialize_mqtt_connection(self) -> bool:
         # Open MQTT connection
@@ -676,24 +665,26 @@ class Eg91SenderV3():
             return False
     
     def disable(self):
-        if self.ENABLED:
-            self.log_info("Disabling EG91 sender module")
+        try:
+            if self.ENABLED:
+                self.log_info("Disabling EG91 sender module")
 
-            #self.close_mqtt_connection()
+                #self.close_mqtt_connection()
+                
+                # Deactivate context
+                self._deactivate_pdp_context()
 
-            # Deactivate context
-            response, success = self._send_command_interrupt(f'AT+QIDEACT={self.PDP_CTXID}', wait_time=40000)
-            if not success:
-                self.log_info("Failed to deactivate context cleanly")
+                # Disable UART interrupt
+                self._uart.irq(trigger=0, handler=None)
 
-            # Disable UART interrupt
-            self._uart.irq(trigger=0, handler=None)
+                self.ENABLED=False
 
+                self.log_info("EG91 sender module disabled successfully")
+            else:
+                self.log_info("EG91 sender module already disabled")
+        except Exception as e:
+            self.log_error(f"Error disabling EG91 sender module: {e}")
             self.ENABLED=False
-
-            self.log_info("EG91 sender module disabled successfully")
-        else:
-            self.log_info("EG91 sender module already disabled")
 
     def is_powered_on(self):
         """Check if radio is powered on with timeout"""
@@ -737,6 +728,38 @@ class Eg91SenderV3():
                     hour, min, sec = time_part.split(":")
                     sec = sec.split("+")[0]
                     return f"{year}-{month}-{day} {hour}:{min}:{sec}"
+
+            raise RuntimeError("Unable to parse time")
+
+        except Exception as e:
+            self.log_error(f"Get time error: {e}")
+            return None
+
+    def get_time_ms(self):
+        """
+        Query the current GMT time via AT+QLTS and return timestamp in milliseconds
+        """
+        try:
+            resp, success = self._send_command_interrupt("AT+QLTS=1", wait_time=10000)
+            if not success:
+                raise RuntimeError("Time command failed")
+
+            lines = resp.splitlines()
+            for line in lines:
+                line = line.strip()
+                if line.startswith("+QLTS"):
+                    # Estrapola la stringa tra le virgolette
+                    time_str = line.split('"')[1]  # "2024/01/19,14:42:30+00"
+
+                    # Rimuove timezone
+                    dt_part = time_str.split('+')[0]  # "2024/01/19,14:42:30"
+                    date_str, time_str_part = dt_part.split(',')
+
+                    # Converte in timestamp ms
+                    year, month, day = map(int, date_str.split('/'))
+                    hour, minute, second = map(int, time_str_part.split(':'))
+                    tm = (year, month, day, hour, minute, second, 0, 0)
+                    return int(time.mktime(tm) * 1000)
 
             raise RuntimeError("Unable to parse time")
 
@@ -846,13 +869,7 @@ class Eg91SenderV3():
         """
         try:
             self.log_info(f"Starting HTTPS GET request to: {url}")
-
-            '''
-            if not self.activate_pdp_context():
-                self.log_error("Failed to activate PDP context for HTTPS")
-                return None
-            '''
-
+            
             # Configure the PDP context ID
             response, success = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
             if not success:
@@ -903,9 +920,16 @@ class Eg91SenderV3():
                 wait_time=timeout * 1000 + 10000  # Convert to ms and add buffer
             )
             
-            if not success or "+QHTTPGET: 0,200" not in response:
+            match = re.search(r"\+QHTTPGET: \d+,(\d+)", response)
+            if not success or not match:
                 self.log_error(f"HTTPS GET request failed: {response}")
-                self._cleanup_https_connection()
+                self.close_https_connection()
+                return None
+
+            http_status = int(match.group(1))
+            if http_status <200 or http_status >=300:
+                self.log_error(f"HTTPS GET request failed (STATUS CODE: {http_status}): {response}")
+                self.close_https_connection()
                 return None
 
             # Read HTTPS response information and output it via UART.
@@ -915,7 +939,7 @@ class Eg91SenderV3():
             )
             
             # Cleanup connection
-            self._cleanup_https_connection()
+            self.close_https_connection()
 
             if success and response:
                 # Clean up the response
@@ -928,7 +952,7 @@ class Eg91SenderV3():
 
         except Exception as e:
             self.log_error(f"HTTPS GET request error: {e}")
-            self._cleanup_https_connection()
+            self.close_https_connection()
             return None
 
     def https_post_request(self, url: str, body, timeout=80, content_type="text/plain") -> str:
@@ -952,12 +976,6 @@ class Eg91SenderV3():
 
             self.log_info(f"Starting HTTPS POST request to: {url}")
 
-            '''
-            if not self.activate_pdp_context():
-                self.log_error("Failed to activate PDP context for HTTPS")
-                return None
-            '''
-
             if content_type not in self.HTTP_CONTENT_TYPES:
                 self.log_error(f"Unsupported content type: {content_type}")
                 return None
@@ -967,7 +985,8 @@ class Eg91SenderV3():
             if not success:
                 self.log_error("Failed to configure HTTP context ID")
                 return None
-                
+  
+            
             # Set ssl context id
             response, success = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
             if not success:
@@ -1006,7 +1025,7 @@ class Eg91SenderV3():
             response, success = self._send_command_interrupt(url)
             if not success:
                 self.log_error("Failed to send URL")
-                return None
+                return None 
 
             # Send HTTPS POST request
             response, success = self._send_command_interrupt(
@@ -1017,7 +1036,7 @@ class Eg91SenderV3():
             
             if not success or "CONNECT" not in response:
                 self.log_error(f"Failed to initiate HTTPS POST: {response}")
-                self._cleanup_https_connection()
+                self.close_https_connection()
                 return None
 
             # Send body data in chunks
@@ -1033,6 +1052,7 @@ class Eg91SenderV3():
 
             # Wait for POST completion and read response
             time.sleep(2)  # Allow time for POST to complete
+
             
             response, success = self._send_command_interrupt(
                 f'AT+QHTTPREAD={timeout}',
@@ -1040,7 +1060,7 @@ class Eg91SenderV3():
             )
             
             # Cleanup connection
-            self._cleanup_https_connection()
+            self.close_https_connection()
             
             if success and response:
                 # Clean up the response
@@ -1053,27 +1073,26 @@ class Eg91SenderV3():
 
         except Exception as e:
             self.log_error(f"HTTPS POST request error: {e}")
-            self._cleanup_https_connection()
+            self.close_https_connection()
             return None
 
-    def _cleanup_https_connection(self):
+    def close_https_connection(self):
         """
-        Clean up HTTPS connection resources
+        Close HTTPS connection
         """
         try:
-            self.log_debug("Cleaning up HTTPS connection")
+            self.log_debug("Closing HTTPS connection")
             
             # Stop HTTP service
             response, success = self._send_command_interrupt("AT+QHTTPSTOP", wait_time=5000)
             if not success:
                 self.log_info("Failed to stop HTTP service cleanly")
             
-            #self.deactivate_pdp_context()
 
-            self.log_debug("HTTPS connection cleanup completed")
+            self.log_debug("HTTPS connection closed")
             
         except Exception as e:
-            self.log_error(f"Error during HTTPS cleanup: {e}")
+            self.log_error(f"Error occured while closing HTTPS connection: {e}")
 
     def list_files(self):
         """
@@ -1243,17 +1262,17 @@ class Eg91SenderV3():
             return False
     
     def log_info(self, message: str):
-        print(f"[INFO] {message}")
+        print(f"[EG91] {message}")
     
     def log_error(self, message: str):
         RED     = "\033[31m"
         RESET   = "\033[0m"
-        print(f"{RED}[ERROR] {message}{RESET}")
+        print(f"{RED}[EG91 ERROR] {message}{RESET}")
     
     def log_debug(self, message: str):
         YELLOW     = "\033[33m"
         RESET   = "\033[0m"
-        print(f"{YELLOW}[DEBUG] {message}{RESET}")
+        print(f"{YELLOW}[EG91 DEBUG] {message}{RESET}")
 
     def get_signal_quality(self):
         """

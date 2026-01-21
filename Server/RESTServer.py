@@ -45,6 +45,10 @@ def getMetadata(wav_bytes):
 
     return metadata
 
+@app.route('/', methods=['GET'])
+def home():
+    return "Audio REST server is running."
+
 @app.route('/audio', methods=['POST'])
 def audio():
     try:
@@ -95,4 +99,4 @@ def audio():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=80, debug=True)
+    app.run(host='0.0.0.0', port=8443, debug=True)
