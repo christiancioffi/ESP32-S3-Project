@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 import time
 import os
-from time import time
 from io import BytesIO
 from mutagen.wave import WAVE
+import hashlib
 
 app = Flask(__name__)
 
@@ -73,13 +73,14 @@ def audio():
         print("Received WAV metadata:", metadata)
 
         # Salva il file WAV nella cartella Samples
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        samples_dir = os.path.join(base_dir, "Samples")
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
+        samples_dir = os.path.join(base_dir, "AudioSamples")
         os.makedirs(samples_dir, exist_ok=True)
 
         # Salvataggio file
-        timestamp = metadata["tmst"]
-        filename = f"sample_{timestamp}.wav"
+        hash_obj = hashlib.sha256(wav_bytes)
+        hash_hex = hash_obj.hexdigest()
+        filename = f"audio_{hash_hex}.wav"
         filepath = os.path.join(samples_dir, filename)
 
         with open(filepath, "wb") as f:

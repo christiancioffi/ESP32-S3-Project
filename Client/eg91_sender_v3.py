@@ -710,10 +710,11 @@ class Eg91SenderV3():
 
     def get_time(self):
         """
-        Query the current GMT time with improved error handling
+        Query the current GMT time with improved error handling,
+        restituisce <time> senza DST e il valore DST separato.
         """
         try:
-            resp, success = self._send_command_interrupt("AT+QLTS=1", wait_time=10000)
+            resp, success = self._send_command_interrupt("AT+QLTS=2", wait_time=10000)  #=1 for GMT time, =2 for local time
             if not success:
                 raise RuntimeError("Time command failed")
 
@@ -721,51 +722,23 @@ class Eg91SenderV3():
             for line in lines:
                 print(line)
                 if "+QLTS" in line:
-                    time_str = line.replace(
-                        '+QLTS: "', "").replace('"', "").replace("OK", "").strip()
-                    date, time_part, _ = time_str.split(',')
-                    year, month, day = date.split("/")
-                    hour, min, sec = time_part.split(":")
-                    sec = sec.split("+")[0]
-                    return f"{year}-{month}-{day} {hour}:{min}:{sec}"
+                    # Pulizia stringa
+                    time_str = line.replace('+QLTS: "', "").replace('"', "").replace("OK", "").strip()
+                    
+                    # Separiamo i campi
+                    parts = time_str.split(',')
+                    time_only = ','.join(parts[:2])  # '2026/01/22,12:35:25+04'
+                    dst_flag = parts[2]               # '1' o '0'
+
+                    return time_only, dst_flag
 
             raise RuntimeError("Unable to parse time")
 
         except Exception as e:
             self.log_error(f"Get time error: {e}")
-            return None
-
-    def get_time_ms(self):
-        """
-        Query the current GMT time via AT+QLTS and return timestamp in milliseconds
-        """
-        try:
-            resp, success = self._send_command_interrupt("AT+QLTS=1", wait_time=10000)
-            if not success:
-                raise RuntimeError("Time command failed")
-
-            lines = resp.splitlines()
-            for line in lines:
-                line = line.strip()
-                if line.startswith("+QLTS"):
-                    # Estrapola la stringa tra le virgolette
-                    time_str = line.split('"')[1]  # "2024/01/19,14:42:30+00"
-
-                    # Rimuove timezone
-                    dt_part = time_str.split('+')[0]  # "2024/01/19,14:42:30"
-                    date_str, time_str_part = dt_part.split(',')
-
-                    # Converte in timestamp ms
-                    year, month, day = map(int, date_str.split('/'))
-                    hour, minute, second = map(int, time_str_part.split(':'))
-                    tm = (year, month, day, hour, minute, second, 0, 0)
-                    return int(time.mktime(tm) * 1000)
-
             raise RuntimeError("Unable to parse time")
 
-        except Exception as e:
-            self.log_error(f"Get time error: {e}")
-            return None
+
 
     def _delete_retained_msg(self) -> bool:
         """Delete retained messages with improved error handling"""
@@ -1087,7 +1060,6 @@ class Eg91SenderV3():
             response, success = self._send_command_interrupt("AT+QHTTPSTOP", wait_time=5000)
             if not success:
                 self.log_info("Failed to stop HTTP service cleanly")
-            
 
             self.log_debug("HTTPS connection closed")
             

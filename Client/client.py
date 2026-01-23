@@ -1,6 +1,4 @@
-from machine import Pin, I2S, idle, UART, SoftI2C
-import network
-import urequests as requests
+from machine import Pin, I2S, idle, UART, SoftI2C, RTC
 import time
 import math
 import struct
@@ -10,17 +8,21 @@ import ujson
 from SDBuffer import SDBuffer
 from soc_driver import SocDriver
 from bus_service import I2cAdapter
+import time
+import ure
 
 
 
 class Metadata:
-    def __init__(self, noId: str, blvl: float, rmsv: float):
+    def __init__(self, tmst: int, noId: str, blvl: float, rmsv: float):
+        self.tmst = tmst
         self.noId = noId
         self.blvl = blvl
         self.rmsv = rmsv
 
     def to_dict(self) -> dict:
         return {
+            "tmst": self.tmst,
             "noId": self.noId,
             "blvl": self.blvl,
             "rmsv": self.rmsv
@@ -94,6 +96,11 @@ class AudioAliNode:
         soc.write_qmax_cell_0()
         '''
 
+        # For time synchronization at startup
+        self.setup_LTE_Connection()
+        if self.LTESender:
+            self.close_LTE_Connection()
+
     def setup_LTE_Connection(self):
         try:
             config={}
@@ -114,10 +121,17 @@ class AudioAliNode:
             time.sleep(15)
 
             if eg91.enable():
-                self.log_info(f"Current time: {eg91.get_time()}")
                 self.LTESender = eg91
+                current_time, _ = self.LTESender.get_time()
+                self.log_info(f"Current time: {current_time}")
+                try:
+                    self.synchronize_time(current_time)
+                except Exception as e:
+                    self.log_error(e)
+                    self.close_LTE_Connection()
             else:
                 self.log_info("Failed to enable EG91 sender\n")
+                
         except OSError as e:
             self.log_error(e)
             config = {}
@@ -138,28 +152,6 @@ class AudioAliNode:
         except Exception as e:
             self.log_error("Caught exception {} {}".format(type(e).__name__, e))
             self.log_error("Failed to close LTE connection")
-
-    def is_network_quality_good(self):
-        if self.LTESender:
-            try:
-                signal_strength_values = self.LTESender.get_signal_quality()
-                if signal_strength_values is None:
-                    return False
-                else:
-                    rssi, rsrp, rsrq, sinr = signal_strength_values
-                    if rsrp >= -95 and sinr >= 10 and rsrq >= -15:
-                        self.log_info("Network quality is good")
-                        return True
-                    else:
-                        self.log_info("Network quality is poor")
-                        return False
-            except Exception as e:
-                self.log_error("Caught exception {} {}".format(type(e).__name__, e))
-                self.log_error("Failed to assess network quality")
-                return False
-        else:
-            self.log_error("LTESender not initialized")
-            return False
 
     def is_battery_sufficient(self):
         #data = self.soc_driver.get_data()
@@ -214,12 +206,12 @@ class AudioAliNode:
         return rmsv
 
     def get_metadata(self, chunk, bits_per_sample, num_channels):
-        #timestamp=str(time.time()+3600)
+        timestamp=time.time()
         nodeID=self.NODEID
         batteryLevel="100%" #TODO
         rmsv=self.calculate_RMS(chunk, bits_per_sample, num_channels)
         return Metadata(
-            #tmst=timestamp,
+            tmst=timestamp,
             noId=nodeID,
             blvl=batteryLevel,
             rmsv=rmsv).to_dict()
@@ -345,13 +337,9 @@ class AudioAliNode:
             self.log_info("==========  DONE RECORDING ==========")
         except (KeyboardInterrupt, Exception) as e:
             self.log_error("Caught exception {} {}".format(type(e).__name__, e))
-            wav_data=bytes()
+            raise Exception("An error occurred during audio recording")
         finally:
             self.i2s_audio_in.deinit()
-        # cleanup
-        #wav.close()
-        #os.umount("/sd")
-        #sd.deinit()
 
         metadata=self.get_metadata(wav_data, WAV_SAMPLE_SIZE_IN_BITS, NUM_CHANNELS)
 
@@ -369,13 +357,13 @@ class AudioAliNode:
         return wav_chunk
 
     def send_chunk_to_server(self, chunk):
-        endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/"
-        #response = self.LTESender.https_post_request(url=endpoint,body=chunk,content_type="application/octet-stream")
-        response = self.LTESender.https_get_request(url=endpoint)
+        endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/audio"
+        response = self.LTESender.https_post_request(url=endpoint,body=chunk,content_type="application/octet-stream")
+        #response = self.LTESender.https_get_request(url=endpoint)
         if response:
             self.log_info("Response: {}".format(response))
         else:
-            raise Exception("An error occured while sending the chunk to the server")
+            raise Exception("An error occurred while sending the chunk to the server")
     
     def log_info(self, message):
         GREEN     = "\033[32m"
@@ -387,7 +375,40 @@ class AudioAliNode:
         RESET   = "\033[0m"
         print(f"{RED}[AliNode] {message}{RESET}")
 
+    def synchronize_time(self, current_time):
+        try:
+            regex_string=ure.compile(
+                "(\d\d\d\d)/(\d\d)/(\d\d),"   # yyyy/MM/dd
+                "(\d\d):(\d\d):(\d\d)"        # hh:mm:ss
+                "([+-]\d+)"                   # ±zz
+            )
+            m = ure.match(regex_string,current_time)
+
+            if not m:
+                raise ValueError("Invalid time format")
+
+            year   = int(m.group(1))
+            month  = int(m.group(2))
+            day    = int(m.group(3))
+            hour   = int(m.group(4))
+            minute = int(m.group(5))
+            second = int(m.group(6))
+            #zz     = int(m.group(7))
+
+            rtc = RTC()
+            rtc.datetime((
+                year, month, day, 0,  # weekday = 0, lo puoi calcolare se vuoi
+                hour, minute, second,
+                0                     # subseconds
+            ))
+
+        except Exception as e:
+            raise Exception("Error while synchronizing local clock: {}".format(e))
+        
     def start(self):
+        tm=time.localtime(time.time())
+        current_time = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        self.log_info(f"Starting main loop at time: {current_time}")
         while True:
             try:
                 chunk=self.get_single_audio_chunk()
@@ -395,6 +416,7 @@ class AudioAliNode:
                 is_buffer_full_enough=self.sd_buffer.is_buffer_full_enough()
                 if is_buffer_full_enough and self.is_battery_sufficient():
                     self.log_info("Buffer full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
+                    '''
                     buffer_len=self.sd_buffer.get_number_of_files()
                     for _ in range(buffer_len):
                         try:
@@ -417,12 +439,11 @@ class AudioAliNode:
                             except Exception as e:
                                 break               # continue se invece vuoi continuare ad inviare il resto (o gestisci l'eccezione dentro send_chunk_to_server)
                         self.close_LTE_Connection()
-                    '''
                 else:
                     self.log_info("Buffer NOT full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
                     
             except Exception as e:
-                self.log_error("A problem during this iteration: {}".format(e))
+                self.log_error("A problem occurred during this iteration: {}".format(e))
             
             self.log_info("Sleeping...")
             time.sleep(self.IDLE_TIME)
