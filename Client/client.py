@@ -3,13 +3,14 @@ import time
 import math
 import struct
 import sys
-from eg91_sender_v3 import Eg91SenderV3 
+from eg91_sender_v4 import Eg91SenderV4 
 import ujson
 from SDBuffer import SDBuffer
 from soc_driver import SocDriver
 from bus_service import I2cAdapter
 import time
 import ure
+import asyncio
 
 
 
@@ -110,9 +111,9 @@ class AudioAliNode:
             except Exception as e:
                 raise OSError("Failed to read configuration file: {}".format(e))
             
-            uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
+            self.eg91_uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
 
-            eg91 = Eg91SenderV3(uart, config)
+            eg91 = Eg91SenderV4(self.eg91_uart, config)
 
             # Power cycle
             Pin(self.LTE_POWER_PIN, Pin.OUT).on()
@@ -148,6 +149,7 @@ class AudioAliNode:
             time.sleep(1)
             Pin(self.LTE_POWER_PIN, Pin.OUT).off()
             time.sleep(15)
+            self.eg91_uart.deinit()
             self.log_info("LTE connection closed successfully")
         except Exception as e:
             self.log_error("Caught exception {} {}".format(type(e).__name__, e))
@@ -268,7 +270,7 @@ class AudioAliNode:
 
     def get_single_audio_chunk(self):
 
-                # MICROPHONE = Adafruit I2S MEMS Microphone Breakout - SPH0645LM4H
+        # MICROPHONE = Adafruit I2S MEMS Microphone Breakout - SPH0645LM4H
 
         # ======= I2S CONFIGURATION =======
         I2S_ID = 0
@@ -449,6 +451,33 @@ class AudioAliNode:
             time.sleep(self.IDLE_TIME)
             self.log_info("Awake!")
 
+    def simpleStart(self):
+        try:
+            config={}
+            try:
+                with open("config.json") as f:
+                    config = ujson.loads(f.read())
+            except Exception as e:
+                raise OSError("Failed to read configuration file: {}".format(e))
+            
+            self.eg91_uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
+
+            eg91 = Eg91SenderV4(self.eg91_uart, config)
+
+            # Power cycle
+            Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+            time.sleep(1)
+            Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+            time.sleep(15)
+
+            response=eg91.simple_send_command()
+            self.log_info(f"Response: {response}")
+                
+        except OSError as e:
+            self.log_error(e)
+            config = {}
+        except Exception as e:
+            self.log_error("Caught exception {} {}".format(type(e).__name__, e))
 
 alinode=AudioAliNode()
 alinode.start()
