@@ -44,7 +44,7 @@ class AudioAliNode:
     SPI_MOSI_PIN = 11
     SPI_MISO_PIN = 13
     SPI_CS_PIN = 1
-    IDLE_TIME = 10  # seconds
+    IDLE_TIME = 20  # seconds
 
     def __init__(self):
 
