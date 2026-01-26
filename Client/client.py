@@ -124,9 +124,10 @@ class AudioAliNode:
             if eg91.enable():
                 self.LTESender = eg91
                 current_time, _ = self.LTESender.get_time()
-                self.log_info(f"Current time: {current_time}")
+                #self.log_info(f"Current time: {current_time}")
                 try:
                     self.synchronize_time(current_time)
+                    self.log_info(f"Local clock synchronized: {self.get_current_time()}")
                 except Exception as e:
                     self.log_error(e)
                     self.close_LTE_Connection()
@@ -359,7 +360,8 @@ class AudioAliNode:
         return wav_chunk
 
     def send_chunk_to_server(self, chunk):
-        endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/audio"
+        #endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/audio"
+        endpoint="https://tesi.aliagrid.com/audio"
         response = self.LTESender.https_post_request(url=endpoint,body=chunk,content_type="application/octet-stream")
         #response = self.LTESender.https_get_request(url=endpoint)
         if response:
@@ -406,11 +408,14 @@ class AudioAliNode:
 
         except Exception as e:
             raise Exception("Error while synchronizing local clock: {}".format(e))
-        
-    def start(self):
+    
+    def get_current_time(self):
         tm=time.localtime(time.time())
         current_time = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
-        self.log_info(f"Starting main loop at time: {current_time}")
+        return current_time
+    
+    def start(self):
+        self.log_info(f"Starting main loop at time: {self.get_current_time()}")
         while True:
             try:
                 chunk=self.get_single_audio_chunk()
