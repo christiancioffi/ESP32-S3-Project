@@ -44,7 +44,6 @@ class SDBuffer:
             self.log_info("SD unmounted")
         except OSError as e:
             self.log_error("Error unmounting SD: {}".format(e))
-            pass
 
     # -----------------------
     # Load the queue from existing files on the SD
