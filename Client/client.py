@@ -2,7 +2,6 @@ from machine import Pin, I2S, idle, UART, SoftI2C, RTC
 import time
 import math
 import struct
-import sys
 from eg91_sender_v4 import Eg91SenderV4 
 import ujson
 from SDBuffer import SDBuffer
@@ -10,7 +9,6 @@ from soc_driver import SocDriver
 from bus_service import I2cAdapter
 import time
 import ure
-import asyncio
 
 
 
@@ -456,33 +454,6 @@ class AudioAliNode:
             time.sleep(self.IDLE_TIME)
             self.log_info("Awake!")
 
-    def simpleStart(self):
-        try:
-            config={}
-            try:
-                with open("config.json") as f:
-                    config = ujson.loads(f.read())
-            except Exception as e:
-                raise OSError("Failed to read configuration file: {}".format(e))
-            
-            self.eg91_uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
-
-            eg91 = Eg91SenderV4(self.eg91_uart, config)
-
-            # Power cycle
-            Pin(self.LTE_POWER_PIN, Pin.OUT).on()
-            time.sleep(1)
-            Pin(self.LTE_POWER_PIN, Pin.OUT).off()
-            time.sleep(15)
-
-            response=eg91.simple_send_command()
-            self.log_info(f"Response: {response}")
-                
-        except OSError as e:
-            self.log_error(e)
-            config = {}
-        except Exception as e:
-            self.log_error("Caught exception {} {}".format(type(e).__name__, e))
 
 alinode=AudioAliNode()
 alinode.start()

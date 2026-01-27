@@ -117,10 +117,12 @@ class Eg91SenderV4():
             self._reception_tsf=asyncio.ThreadSafeFlag()
             self._received_data_handler=self._handle_new_data
             self._event_loop=asyncio.get_event_loop()
+            self._rx_buffer_size = 2048
             self._rx_buffer=""
             self._response_ready = False
             self._command_pending = False
             self._wait_for_event = None
+            self._min_wait_time = 5000  # Minimum wait time in ms
             self._response_lock = _thread.allocate_lock()
             self._unsolicited_messages = []
 
@@ -147,19 +149,18 @@ class Eg91SenderV4():
         except Exception as e:
             self.log_error(f"UART IRQ handler error: {e}")
         
-
     def _handle_new_data(self, _):
         """Handle received data outside of interrupt context"""
 
         try:
 
-            raw_data = self._uart.read(2048)
+            raw_data = self._uart.read(self._rx_buffer_size)
 
             if raw_data:
 
-                self.log_info("(_handle_new_data) waiting for lock")
+                self.log_info("(_handle_new_data) waiting for lock (filling the buffer)")
                 with self._response_lock:
-                    self.log_info("(_handle_new_data) lock acquired")
+                    self.log_info("(_handle_new_data) lock acquired (filling the buffer)")
 
                     self.log_info("(_handle_new_data) Data received!")
                     self.log_info(f"(_handle_new_data) {len(raw_data)} bytes read from UART")
@@ -167,63 +168,31 @@ class Eg91SenderV4():
 
                     data=raw_data.decode('utf-8', 'ignore')
 
-                    # If we're waiting for a specific event, check for it
-                    if self._command_pending and self._wait_for_event:
-                        if self._wait_for_event in data:
+                    if self._command_pending:
+                        # If we're waiting for a specific event, check for it
+                        if self._wait_for_event and self._wait_for_event in data:
                             self._rx_buffer += data
                             self._response_ready = True
                             self.log_debug("(_handle_new_data) Pending command response detected")
                             self._reception_tsf.set()
-                    # Otherwise, check for standard command responses
-                    elif self._command_pending and any(term in data for term in ["OK", "ERROR", "+CME ERROR", "+CMS ERROR"]):
-                        self._rx_buffer += data
-                        self._response_ready = True
-                        self.log_debug("(_handle_new_data) Pending command response detected")
-                        self._reception_tsf.set()
+                        # Otherwise, check for standard command responses
+                        elif any(term in data for term in ["OK", "ERROR", "+CME ERROR", "+CMS ERROR"]):
+                            self._rx_buffer += data
+                            self._response_ready = True
+                            self.log_debug("(_handle_new_data) Pending command response detected")
+                            self._reception_tsf.set()
                 
-                self.log_info("(_handle_new_data) lock released")
+                self.log_info("(_handle_new_data) lock released (filling the buffer)")
         except Exception as e:
             self.log_error(f"Error handling new received data: {e}")
 
-    async def _wait_response(self, timeout):    #timeout in seconds
+    async def _wait_response(self, timeout):
         try:
             self.log_debug(f"(_wait_response) Waiting for response for {timeout} ms...")
             await asyncio.wait_for_ms(self._reception_tsf.wait(), timeout)
             self.log_debug("(_wait_response) Waiting terminated")
         except asyncio.TimeoutError:
             self.log_error("(_wait_response) Timeout occurred")
-
-    def _handle_mqtt_message(self):
-        """Handle incoming MQTT messages"""
-        try:
-            lines = self._rx_buffer.split('\n')
-            for line in lines:
-                if '+QMTRECV:' in line:
-                    incoming_data = self.decode_mqtt_data(line)
-                    if incoming_data :
-                        self._received_mqtt_data = incoming_data
-                    self.log_debug(
-                        f"Received MQTT data: {self._received_mqtt_data}")
-        except Exception as e:
-            self.log_error(f"Error handling MQTT message: {e}")
-
-    def _handle_mqtt_status(self):
-        """Handle MQTT status changes"""
-        try:
-            lines = self._rx_buffer.split('\n')
-            for line in lines:
-                if '+QMTSTAT:' in line:
-                    # Parse status: +QMTSTAT: <client_idx>,<error_code>
-                    parts = line.replace('+QMTSTAT:', '').strip().split(',')
-                    if len(parts) >= 2:
-                        error_code = int(parts[1])
-                        if error_code != 5: #5 = NO ERROR
-                            self.log_error(
-                                f"MQTT connection error: {error_code}")
-                            self._mqtt_connected = False
-                            self._connection_state = self.STATE_ERROR
-        except Exception as e:
-            self.log_error(f"Error handling MQTT status: {e}")
 
     def _send_command_interrupt(self, command, wait_time=None, wait_for_event=None) -> tuple[str, bool]:
         """
@@ -239,24 +208,35 @@ class Eg91SenderV4():
         # Get timeout from command table if available
         if not wait_time:  # Default value
             cmd_key = command.split('=')[0].split('?')[0]
-            wait_time = self.MAX_RESP_TIME.get(cmd_key, 5000)
-        
+            wait_time = self.MAX_RESP_TIME.get(cmd_key, self._min_wait_time)
 
-        self.log_info("(_send_command_interrupt) waiting for lock")
+        wait_time=max(wait_time, self._min_wait_time)            
+
+        self.log_info("(_send_command_interrupt) waiting for lock (buffer initialization)")
         with self._response_lock:
-            self.log_info("(_send_command_interrupt) lock acquired")
+            self.log_info("(_send_command_interrupt) lock acquired (buffer initialization)")
             self._rx_buffer = ""
             self._response_ready = False
             self._command_pending = True
             self._wait_for_event = wait_for_event
-        self.log_info("(_send_command_interrupt) lock released")
+        self.log_info("(_send_command_interrupt) lock released (buffer initialization)")
 
         # Send command
         self._uart.write(command + "\r")
         self._uart.flush()
 
+        self.log_debug("Command sent!")
+
+        '''
+        self.log_debug("Command sent, sleeping before waiting...")
+        time.sleep(10)
+        self.log_debug("Command sent, awake before waiting...")
+        '''
+
         self._event_loop.run_until_complete(self._wait_response(wait_time))
+        self.log_info("(_send_command_interrupt) waiting for lock (response reading)")
         with self._response_lock:
+            self.log_info("(_send_command_interrupt) lock acquired (response reading)")
             self._reception_tsf.clear()
             if self._response_ready:
                 response = self._rx_buffer
@@ -267,7 +247,7 @@ class Eg91SenderV4():
                 self._command_pending = False
                 self._wait_for_event = None
                 raise Exception(f"Timeout waiting for response to command: {command}")
-
+        self.log_info("(_send_command_interrupt) lock released (response reading)")
         self.log_debug(f"Received response: {response}")
 
         # Determine success
@@ -317,6 +297,38 @@ class Eg91SenderV4():
         raise RuntimeError(
             f"Error while sending AT command, no response received. Sent command: {command}")
 
+    def _handle_mqtt_message(self):
+        """Handle incoming MQTT messages"""
+        try:
+            lines = self._rx_buffer.split('\n')
+            for line in lines:
+                if '+QMTRECV:' in line:
+                    incoming_data = self.decode_mqtt_data(line)
+                    if incoming_data :
+                        self._received_mqtt_data = incoming_data
+                    self.log_debug(
+                        f"Received MQTT data: {self._received_mqtt_data}")
+        except Exception as e:
+            self.log_error(f"Error handling MQTT message: {e}")
+
+    def _handle_mqtt_status(self):
+        """Handle MQTT status changes"""
+        try:
+            lines = self._rx_buffer.split('\n')
+            for line in lines:
+                if '+QMTSTAT:' in line:
+                    # Parse status: +QMTSTAT: <client_idx>,<error_code>
+                    parts = line.replace('+QMTSTAT:', '').strip().split(',')
+                    if len(parts) >= 2:
+                        error_code = int(parts[1])
+                        if error_code != 5: #5 = NO ERROR
+                            self.log_error(
+                                f"MQTT connection error: {error_code}")
+                            self._mqtt_connected = False
+                            self._connection_state = self.STATE_ERROR
+        except Exception as e:
+            self.log_error(f"Error handling MQTT status: {e}")
+    
     def decode_mqtt_data(self, msg: str) -> dict:
         """Decode MQTT message with improved error handling"""
         try:
@@ -464,8 +476,8 @@ class Eg91SenderV4():
                 
                 except Exception as e:
                     self.log_error(f"Enable attempt {attempt + 1} failed: {e}")
-                    
-        return False
+                    return False
+        return True
     
     def _activate_pdp_context(self) -> bool:
         
@@ -865,14 +877,21 @@ class Eg91SenderV4():
                 self.log_error("Failed to configure response header")
                 return None
             
-            '''
             # Set ssl context id
             response, success = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
             if not success:
                 self.log_error("Failed to configure SSL context ID")
-                return None    
+                return None
             
-            # Set SSL cipher suite as 0xFFFF which means ALL
+            '''
+            # Set SSL version as 3 which means TLS1.2
+            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sslversion",{self.HTTPS_SSL_CTXID},3')
+            if not success:
+                self.log_error("Failed to configure SSL version")
+                return None
+            
+            
+            # Set SSL cipher suite as 0x0005 which means RC4-SHA
             response, success = self._send_command_interrupt(f'AT+QSSLCFG="ciphersuite",{self.HTTPS_SSL_CTXID},0xFFFF')
             if not success:
                 self.log_error("Failed to configure SSL cipher suite")
@@ -884,6 +903,12 @@ class Eg91SenderV4():
                 self.log_error("Failed to configure SSL security level")
                 return None
             '''
+
+            # Set Server Name Indication feature 
+            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')
+            if not success:
+                self.log_error("Failed to configure SSL security level")
+                return None
 
             # Set the URL which will be accessed
             response, success = self._send_command_interrupt(
@@ -928,7 +953,7 @@ class Eg91SenderV4():
 
             if success and response:
                 # Clean up the response
-                cleaned_response = response.replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
+                cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
                 self.log_info("HTTPS GET request completed successfully")
                 return cleaned_response
             else:
@@ -986,16 +1011,29 @@ class Eg91SenderV4():
             if not success:
                 self.log_error("Failed to configure SSL context ID")
                 return None
+            
             '''
-            # Set SSL cipher suite as 0xFFFF which means ALL
+            # Set SSL version as 3 which means TLS1.2
+            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sslversion",{self.HTTPS_SSL_CTXID},3')
+            if not success:
+                self.log_error("Failed to configure SSL version")
+                return None
+            
+            
+            # Set SSL cipher suite as 0x0005 which means RC4-SHA
             response, success = self._send_command_interrupt(f'AT+QSSLCFG="ciphersuite",{self.HTTPS_SSL_CTXID},0xFFFF')
             if not success:
                 self.log_error("Failed to configure SSL cipher suite")
                 return None
-            '''
-
+                
             # Set SSL verify level as 0 which means CA certificate is not needed
-            response, success = self._send_command_interrupt(f'AT+QSSLCFG="seclevel",{self.HTTPS_SSL_CTXID},1')
+            response, success = self._send_command_interrupt(f'AT+QSSLCFG="seclevel",{self.HTTPS_SSL_CTXID},0')
+            if not success:
+                self.log_error("Failed to configure SSL security level")
+                return None
+            '''
+            # Set Server Name Indication feature 
+            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
             if not success:
                 self.log_error("Failed to configure SSL security level")
                 return None
@@ -1052,7 +1090,7 @@ class Eg91SenderV4():
             
             if success and response:
                 # Clean up the response
-                cleaned_response = response.replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
+                cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
                 self.log_info("HTTPS POST request completed successfully")
                 return cleaned_response
             else:
@@ -1066,17 +1104,17 @@ class Eg91SenderV4():
 
     def _send_https_post_body(self, body: str):
 
-        self.log_info("(_send_https_post_body) waiting for lock 1")
+        self.log_info("(_send_https_post_body) waiting for lock (buffer initialization)")
         with self._response_lock:
-            self.log_info("(_send_https_post_body) lock 1 acquired")
+            self.log_info("(_send_https_post_body) lock acquired (buffer initialization)")
             self._rx_buffer = ""
             self._response_ready = False
             self._command_pending = True
             self._wait_for_event = "+QHTTPPOST"
-        self.log_info("(_send_https_post_body) lock 1 released")
+        self.log_info("(_send_https_post_body) lock released (buffer initialization)")
 
         # Send body data in chunks
-        self.log_debug("Sending POST body data")
+        self.log_debug("Sending POST body data...")
         chunk_size = 128
         body_bytes = body.encode('utf-8') if isinstance(body, str) else body
         
@@ -1090,11 +1128,14 @@ class Eg91SenderV4():
         #time.sleep(2)  # Allow time for POST to complete
 
         wait_time = self.MAX_RESP_TIME.get("AT+QHTTPPOST", 5000)
+        wait_time = max(wait_time, self._min_wait_time)
 
-        self.log_debug(f"Body sent, waiting for response up to {wait_time} ms")
+        self.log_debug("Body sent!")
 
         self._event_loop.run_until_complete(self._wait_response(wait_time))
+        self.log_info("(_send_https_post_body) waiting for lock (response reading)")
         with self._response_lock:
+            self.log_info("(_send_https_post_body) lock acquired (response reading)")
             self._reception_tsf.clear()
             if self._response_ready:
                 response = self._rx_buffer
@@ -1106,7 +1147,7 @@ class Eg91SenderV4():
                 self._wait_for_event = None
                 raise Exception(f"Timeout waiting for response to POST request")
             
-
+        self.log_info("(_send_https_post_body) lock released (response reading)")
         self.log_debug(f"Received response: {response}")
 
         # Determine success
