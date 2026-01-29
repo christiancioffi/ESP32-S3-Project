@@ -2,7 +2,7 @@ from machine import Pin, I2S, idle, UART, SoftI2C, RTC
 import time
 import math
 import struct
-from eg91_sender_v4 import Eg91SenderV4 
+from eg91_sender_v5 import Eg91SenderV5 
 import ujson
 from SDBuffer import SDBuffer
 from soc_driver import SocDriver
@@ -111,7 +111,7 @@ class AudioAliNode:
             
             self.eg91_uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
 
-            eg91 = Eg91SenderV4(self.eg91_uart, config)
+            eg91 = Eg91SenderV5(self.eg91_uart, config)
 
             # Power cycle
             Pin(self.LTE_POWER_PIN, Pin.OUT).on()
@@ -130,12 +130,10 @@ class AudioAliNode:
                     self.log_error(e)
                     self.close_LTE_Connection()
             else:
-                self.log_info("Failed to enable EG91 sender\n")
+                self.log_error("Failed to enable EG91 sender\n")
                 
-        except OSError as e:
-            self.log_error(e)
-            config = {}
         except Exception as e:
+            config={}
             self.log_error("Caught exception {} {}".format(type(e).__name__, e))
             self.log_error("Failed to setup LTE connection")
 
@@ -457,5 +455,4 @@ class AudioAliNode:
 
 alinode=AudioAliNode()
 alinode.start()
-
-
+#alinode.sd_buffer.clear_buffer()
