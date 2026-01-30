@@ -1,7 +1,9 @@
 import re
 
+from Loggable import Loggable
 
-class ATCommandsParser():
+
+class ATCommandsParser(Loggable):
 
     _ip_pattern=f"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d){"(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))"*3}"
     _simple_ip_pattern=f"\d(\d)?(\d)?{"\.\d(\d)?(\d)?"*3}"
@@ -26,7 +28,7 @@ class ATCommandsParser():
         ("AT+QHTTPPOST=<data_length>[,<input_time>,<rsptime>]","AT\+QHTTPPOST=\d+(,\d+,\d+)?"),
         ("AT+QHTTPSTOP","AT\+QHTTPSTOP"),
         ("URL","http(s)?://.+"),
-        ("BODY_POST",".+")
+        ("POST_BODY",".+")
     ]
 
     RESPONSE_PATTERNS={ # command : response pattern
@@ -47,58 +49,48 @@ class ATCommandsParser():
         'AT+QHTTPPOST=<data_length>[,<input_time>,<rsptime>]': "\r\nCONNECT\r\n",
         'AT+QHTTPSTOP': "\r\nOK\r\n",
         'URL': "\r\nOK\r\n",
-        'BODY_POST': "\r\nOK\r\n\r\n\+QHTTPPOST: \d+(,\d+(,\d+)?)?\r\n",
+        'POST_BODY': "\r\nOK\r\n\r\n\+QHTTPPOST: \d+(,\d+(,\d+)?)?\r\n",
         "ERROR": "\r\n(\+CME ERROR: \d+)|(ERROR)\r\n"
     }
 
     def __init__(self):
+        super().__init__(ATCommandsParser.__name__)
         self.COMMAND_PATTERNS = [
             (cmd, re.compile("^" + pattern + "$"))
             for cmd, pattern in self.COMMAND_PATTERNS
         ]
 
     def parse_response(self, command: str, data: str):
+        try:
+            recognized_command=self._get_recognized_command(command.strip())
+            self.log_debug(f"Command pattern identified: {recognized_command}")
+            response_pattern=self.RESPONSE_PATTERNS.get(recognized_command, None)
+            response=None
+            error=None
 
-        recognized_command=self._get_recognized_command(command.strip())
-        self.log_debug(f"Command pattern identified: {recognized_command}")
-        response_pattern=self.RESPONSE_PATTERNS.get(recognized_command, None)
-        response=None
-        error=None
+            if response_pattern is None:
+                self.log_error(f"Unknown command: {command}")
+                return None, None
+            
+            response_regex=re.compile(response_pattern)
+            matched_response=response_regex.search(data)
 
-        if response_pattern is None:
-            self.log_error(f"Unknown command: {command}")
-            return None, None
-        
-        response_regex=re.compile(response_pattern) #TODO: controllare che funzioni
-        matched_response=response_regex.search(data)
-
-        if matched_response:
-            self.log_debug(f"Matched response: {matched_response.group(0)}")
-            response = matched_response.group(0)
-        else:
-            error_regex=re.compile(self.RESPONSE_PATTERNS["ERROR"])
-            matched_error=error_regex.search(data)
-            if matched_error:
-                self.log_debug(f"Matched error response: {matched_error.group(0)}")
-                error= matched_error.group(0)
+            if matched_response:
+                self.log_debug(f"Matched response: {matched_response.group(0)}")
+                response = matched_response.group(0)
             else:
-                self.log_debug("No matching response or error found")
-        
-        return response, error
+                error_regex=re.compile(self.RESPONSE_PATTERNS["ERROR"])
+                matched_error=error_regex.search(data)
+                if matched_error:
+                    self.log_debug(f"Matched error response: {matched_error.group(0)}")
+                    error= matched_error.group(0)
+                else:
+                    self.log_debug("No matching response or error found")
+            
+            return response, error
+        except Exception as e:
+            raise Exception(f"Error while parsing response for command '{command}': {str(e)}")
     
-
-    def log_info(self, message: str):
-        print(f"[ATParser] {message}")
-    
-    def log_error(self, message: str):
-        RED     = "\033[31m"
-        RESET   = "\033[0m"
-        print(f"{RED}[ATParser ERROR] {message}{RESET}")
-    
-    def log_debug(self, message: str):
-        YELLOW     = "\033[33m"
-        RESET   = "\033[0m"
-        print(f"{YELLOW}[ATParser DEBUG] {message}{RESET}")
     
     def _get_recognized_command(self, command: str) -> str:
         for cmd, pattern in self.COMMAND_PATTERNS:

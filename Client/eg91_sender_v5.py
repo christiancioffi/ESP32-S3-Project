@@ -2,14 +2,15 @@ import asyncio
 import sys
 import time
 import ujson
-from rx_buffer_manager import RXBufferManager
+from Loggable import Loggable
+from rx_data_manager import RXDataManager
 from machine import UART
 import esp32
 import re
 import micropython
 
 #TODO: save ip addr and send via log
-class Eg91SenderV5():
+class Eg91SenderV5(Loggable):
     """
         Improved Sender class to control Quectel EG915N radio with interrupt-based UART communication.
 
@@ -107,6 +108,8 @@ class Eg91SenderV5():
     def __init__(self, adapter, config: dict):
         try:
 
+            super().__init__(Eg91SenderV5.__name__)
+
             if config["adapter"] != "uart" or not isinstance(adapter, UART):
                 self.log_error("invalid adapter type, must be uart")
                 raise ValueError("Invalid adapter type, must be uart")
@@ -140,7 +143,6 @@ class Eg91SenderV5():
             '''
             self._event_loop=asyncio.get_event_loop()
             self._reception_tsf=asyncio.ThreadSafeFlag()
-            self._rx_buffer_size = 2048
             self._rx_buffer=""
             self._response_ready = False
             self._command_pending = False
@@ -149,10 +151,11 @@ class Eg91SenderV5():
             self._response_lock = _thread.allocate_lock()
             self._parser=ATCommandsParser()
             '''
+            self._rx_bytes_to_read = 2048
             self._min_wait_time = 5000  # Minimum wait time in ms
             self._unsolicited_messages = []
             self.ENABLED = False
-            self._rx_buffer_manager=RXBufferManager(buffer_size=2048)
+            self._rx_data_manager=RXDataManager()
 
             # Initialize interrupt-based communication
             self._init_uart_interrupt()
@@ -181,53 +184,59 @@ class Eg91SenderV5():
         """Handle received data outside of interrupt context"""
 
         try:
-
-            raw_data = self._uart.read(self._rx_buffer_manager._rx_buffer_size)
+            raw_data = self._uart.read(self._rx_bytes_to_read)
 
             if raw_data:
-                self._rx_buffer_manager.insert_into_buffer(raw_data, caller="_handle_new_data")
+                self._rx_data_manager.handle_received_data(raw_data, caller=self._handle_new_data.__name__)
 
         except Exception as e:
-            self.log_error(f"Error handling new received data: {e}")
+            self.log_error(f"Error handling new received data: \"{e}\"")
 
-    def _send_command_interrupt(self, command, wait_time=None) -> tuple[str, bool]:
+    def _send_command_interrupt(self, command, wait_time=None) -> str:
         """
         Send AT command using interrupt-based communication with improved error handling
 
         :param str command: AT command to send
         :param int wait_time: maximum wait time in milliseconds
-        :return tuple: (response, success)
+        :return str: response
         """
-        self.log_debug(f"Sending AT command: {command}")
-        
-        response=None
-        success=False
 
-        # Get timeout from command table if available
-        if not wait_time:  # Default value
-            cmd_key = command.split('=')[0].split('?')[0]
-            wait_time = self.MAX_RESP_TIME.get(cmd_key, self._min_wait_time)
+        try:
+            self.log_debug(f"Sending AT command: {command}")
+            
+            response=None
 
-        wait_time=max(wait_time, self._min_wait_time)            
+            # Get timeout from command table if available
+            if not wait_time:  # Default value
+                cmd_key = command.split('=')[0].split('?')[0]
+                wait_time = self.MAX_RESP_TIME.get(cmd_key, self._min_wait_time)
 
-        self._rx_buffer_manager.set_pending_status(command, caller="_send_command_interrupt")
+            wait_time=max(wait_time, self._min_wait_time)            
 
-        # Send command
-        self._uart.write(command + "\r")
-        self._uart.flush()
+            self._rx_data_manager.set_pending_state(command, caller=self._send_command_interrupt.__name__)
 
-        self.log_debug("Command sent!")
+            # Send command
+            self._uart.write(command + "\r")
+            self._uart.flush()
 
-        '''
-        self.log_debug("Command sent, sleeping before waiting...")
-        time.sleep(10)
-        self.log_debug("Command sent, awake before waiting...")
-        '''
+            self.log_debug("Command sent!")
 
-        response, success = self._rx_buffer_manager.read_from_buffer(wait_time, caller="_send_command_interrupt")
-        self.log_debug(f"Received response: {response}")
+            '''
+            self.log_debug("Command sent, sleeping before waiting...")
+            time.sleep(10)
+            self.log_debug("Command sent, awake before waiting...")
+            '''
 
-        return response, success
+            response, success = self._rx_data_manager.read_received_data(wait_time, caller=self._send_command_interrupt.__name__)
+            if not success:
+                raise Exception(f"Received an ERROR response: {response}")
+            
+            self.log_debug(f"Received response: {response}")
+
+            return response
+        except Exception as e:
+            self.log_error(f"Error sending command '{command}': \"{e}\"")
+            raise Exception(f"Error sending command '{command}'")
 
     def _send_command(self, command, wait_time=2000, max_attempts=1) -> str:
         """
@@ -319,8 +328,8 @@ class Eg91SenderV5():
     def _check_network_registration(self) -> bool:
         """Check if device is registered to network"""
         try:
-            response, success = self._send_command_interrupt("AT+CREG?")
-            if success and "+CREG:" in response:
+            response = self._send_command_interrupt("AT+CREG?")
+            if "+CREG:" in response:
                 # Parse: +CREG: <n>,<stat>
                 for line in response.split('\n'):
                     if '+CREG:' in line:
@@ -332,7 +341,7 @@ class Eg91SenderV5():
                             return self._network_registered
             return False
         except Exception as e:
-            self.log_error(f"Error checking network registration: {e}")
+            self.log_error(f"Error checking network registration: \"{e}\"")
             return False
 
     def _recovery_sequence(self) -> bool:
@@ -388,18 +397,16 @@ class Eg91SenderV5():
 
                     # Clear buffers
                     self._uart.read(10000)
-                    self._rx_buffer_manager.clear_buffer(caller="enable")
+                    self._rx_data_manager.clear_state(caller=self.enable.__name__)
 
                     # Basic configuration with error checking
                     self.log_debug("Starting basic configuration")
 
                     # Test basic communication
-                    response, success = self._send_command_interrupt(command="AT")
-                    if not success:
-                        raise RuntimeError("Basic AT command failed")
+                    response = self._send_command_interrupt(command="AT")
 
                     # Disable echo
-                    self._send_command_interrupt(command="ATE0")
+                    response = self._send_command_interrupt(command="ATE0")
 
                     '''
                     # Configure context
@@ -408,8 +415,8 @@ class Eg91SenderV5():
                     '''
 
                     # Check SIM status
-                    response, success = self._send_command_interrupt("AT+CPIN?")
-                    if not success or "READY" not in response:
+                    response = self._send_command_interrupt("AT+CPIN?")
+                    if "READY" not in response:
                         raise RuntimeError("SIM not ready")
 
                     # Check network registration
@@ -448,10 +455,12 @@ class Eg91SenderV5():
     
     def _activate_pdp_context(self) -> bool:
         
-        # Configure APN
-        apn_cmd = f'AT+QICSGP={self.PDP_CTXID},1,"{self._apn}","","",1'
-        response, success = self._send_command_interrupt(apn_cmd)
-        if not success:
+        
+        try:
+            # Configure APN
+            apn_cmd = f'AT+QICSGP={self.PDP_CTXID},1,"{self._apn}","","",1'
+            response = self._send_command_interrupt(apn_cmd)
+        except Exception as e:
             raise RuntimeError("APN configuration failed")
         
         '''
@@ -461,29 +470,31 @@ class Eg91SenderV5():
             return None
         '''
 
-        # Verify activation
-        response, success = self._send_command_interrupt("AT+QIACT?")
-        if not success:
+        try:
+           # Verify activation
+            response = self._send_command_interrupt("AT+QIACT?")
+        except Exception as e:
             raise RuntimeError("Context verification failed")
-
-        # Activate context
-        response, success = self._send_command_interrupt(
-            f"AT+QIACT={self.PDP_CTXID}")
-        if not success:
+            
+        try:
+           # Activate context
+            response = self._send_command_interrupt(f"AT+QIACT={self.PDP_CTXID}")
+        except Exception as e:
             raise RuntimeError("Context activation failed")
 
-        # Verify activation
-        response, success = self._send_command_interrupt("AT+QIACT?")
-        if not success or "+QIACT:" not in response:
+        try:
+           # Verify activation
+            response = self._send_command_interrupt("AT+QIACT?")
+        except Exception as e:
             raise RuntimeError("Context verification failed")
 
     def _deactivate_pdp_context(self) -> bool:
-        # Deactivate context
-        response, success = self._send_command_interrupt(f'AT+QIDEACT={self.PDP_CTXID}')
 
-        if not success:
-            self.log_info("Failed to deactivate context cleanly")
-            raise RuntimeError("Context deactivation failed")      
+        try:
+           # Deactivate context
+            response = self._send_command_interrupt(f'AT+QIDEACT={self.PDP_CTXID}')
+        except Exception as e:
+            raise RuntimeError("Context deactivation failed")                
 
     def initialize_mqtt_connection(self) -> bool:
         # Open MQTT connection
@@ -706,9 +717,10 @@ class Eg91SenderV5():
         restituisce <time> senza DST e il valore DST separato.
         """
         try:
-            resp, success = self._send_command_interrupt("AT+QLTS=2")  #=1 for GMT time, =2 for local time
-            if not success:
-                raise RuntimeError("Time command failed")
+            try:
+                resp = self._send_command_interrupt("AT+QLTS=2")  #=1 for GMT time, =2 for local time
+            except Exception as e:
+                raise RuntimeError("QLTS command failed")
 
             lines = resp.splitlines()
             for line in lines:
@@ -723,11 +735,11 @@ class Eg91SenderV5():
 
                     return time_only, dst_flag
 
-            raise RuntimeError("Unable to parse time")
+            return None, None
 
         except Exception as e:
-            self.log_error(f"Get time error: {e}")
-            raise RuntimeError("Unable to parse time")
+            self.log_error(f"Time command failed: {e}")
+            return None, None
 
 
 
@@ -830,27 +842,30 @@ class Eg91SenderV5():
         :return str | None: string containing http response or None if any error occurs
         """
         try:
-            self.log_info(f"Starting HTTPS GET request to: {url}")
-            
-            # Configure the PDP context ID
-            response, success = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
-            if not success:
-                self.log_error("Failed to configure HTTP context ID")
-                return None
 
-            ''' 
+            self.log_info(f"Starting HTTPS GET request to: {url}")
+
+            response=None
+            
+            try:
+                # Configure the PDP context ID
+                response = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
+            except Exception as e:
+                raise Exception("Failed to configure HTTP context ID")
+
+            '''
             # Allow to output HTTPS response header
             response, success = self._send_command_interrupt('AT+QHTTPCFG="responseheader",1')
             if not success:
                 self.log_error("Failed to configure response header")
                 return None
             '''
-            
-            # Set ssl context id
-            response, success = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
-            if not success:
-                self.log_error("Failed to configure SSL context ID")
-                return None
+
+            try:
+                # Set ssl context id
+                response = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
+            except Exception as e:
+                raise Exception("Failed to configure SSL context ID")
             
             '''
             # Set SSL version as 3 which means TLS1.2
@@ -873,63 +888,50 @@ class Eg91SenderV5():
                 return None
             '''
 
-            # Set Server Name Indication feature 
-            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')
-            if not success:
-                self.log_error("Failed to configure SSL security level")
-                return None
-
-            # Set the URL which will be accessed
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPURL={len(url)},{timeout}'
-            )
-            if not success or "CONNECT" not in response:
-                self.log_error("Failed to set HTTPS URL")
-                return None
-                
-            response, success = self._send_command_interrupt(url)
-            if not success:
-                self.log_error("Failed to send URL")
-                return None
-
-            # Send HTTPS GET request and the maximum response time is 80s.
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPGET={timeout}'
-            )
+            try:
+                # Set Server Name Indication feature 
+                response = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
+            except Exception as e:
+                raise Exception("Failed to configure SSL Server Name Indication feature")
             
-            match = re.search(r"\+QHTTPGET: \d+,(\d+)", response)
-            if not success or not match:
-                self.log_error(f"HTTPS GET request failed: {response}")
-                self.close_https_connection()
-                return None
+            try:
+                # Set the URL which will be accessed
+                response = self._send_command_interrupt(f'AT+QHTTPURL={len(url)},{timeout}')
+                if "CONNECT" not in response:
+                    raise Exception()   
+            except Exception as e:
+                raise Exception("Failed to set HTTPS URL")
+            
+            try:
+                # Send the URL which will be accessed
+                response  = self._send_command_interrupt(url) 
+            except Exception as e:
+                raise Exception("Failed to send URL")
 
-            http_status = int(match.group(1))
-            if http_status <200 or http_status >=300:
-                self.log_error(f"HTTPS GET request failed (STATUS CODE: {http_status}): {response}")
-                self.close_https_connection()
-                return None
-            else:
-                self.log_info(f"HTTPS GET request succeeded with status code: {http_status}")
 
-            # Read HTTPS response information and output it via UART.
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPREAD={timeout}'
-            )
+            try:
+                # Send HTTPS GET request
+                response = self._send_command_interrupt(f'AT+QHTTPGET={timeout}')
+                if "CONNECT" not in response:
+                    raise Exception()   
+            except Exception as e:
+                    raise Exception(f"Failed to initiate HTTPS GET")
+            
+            try:
+                response = self._send_command_interrupt(f'AT+QHTTPREAD={timeout}')
+            except Exception as e:
+                raise Exception("Failed to read HTTPS GET response")
             
             # Cleanup connection
             self.close_https_connection()
 
-            if success and response:
-                # Clean up the response
-                cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
-                self.log_info("HTTPS GET request completed successfully")
-                return cleaned_response
-            else:
-                self.log_error("Failed to read HTTPS response")
-                return None
+            cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
+            self.log_info("HTTPS GET request completed successfully")
+
+            return cleaned_response
 
         except Exception as e:
-            self.log_error(f"HTTPS GET request error: {e}")
+            self.log_error(f"HTTPS GET request error: \"{e}\"")
             self.close_https_connection()
             return None
 
@@ -954,24 +956,24 @@ class Eg91SenderV5():
 
             self.log_info(f"Starting HTTPS POST request to: {url}")
 
-            if content_type not in self.HTTP_CONTENT_TYPES:
-                self.log_error(f"Unsupported content type: {content_type}")
-                return None
-            
-            # Configure the PDP context ID
-            response, success = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
-            if not success:
-                self.log_error("Failed to configure HTTP context ID")
-                return None
-  
+            response=None
 
-            # Set content type
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPCFG="contenttype",{self.HTTP_CONTENT_TYPES[content_type]}'
-            )
-            if not success:
-                self.log_error("Failed to configure content type")
-                return None
+            if content_type not in self.HTTP_CONTENT_TYPES:
+                raise Exception(f"Unsupported content type: {content_type}")
+            
+            try:
+                # Configure the PDP context ID
+                response = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
+            except Exception as e:
+                raise Exception("Failed to configure HTTP context ID")
+
+            try:
+                # Set content type
+                response = self._send_command_interrupt(
+                    f'AT+QHTTPCFG="contenttype",{self.HTTP_CONTENT_TYPES[content_type]}'
+                )
+            except Exception as e:
+                raise Exception("Failed to configure content type")
             
             '''
             # Allow to output HTTPS response header
@@ -980,12 +982,12 @@ class Eg91SenderV5():
                 self.log_error("Failed to configure response header")
                 return None
             '''
-            
-            # Set ssl context id
-            response, success = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
-            if not success:
-                self.log_error("Failed to configure SSL context ID")
-                return None
+
+            try:
+                # Set ssl context id
+                response = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
+            except Exception as e:
+                raise Exception("Failed to configure SSL context ID")
             
             '''
             # Set SSL version as 3 which means TLS1.2
@@ -1007,106 +1009,109 @@ class Eg91SenderV5():
                 self.log_error("Failed to configure SSL security level")
                 return None
             '''
-            # Set Server Name Indication feature 
-            response, success = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
-            if not success:
-                self.log_error("Failed to configure SSL security level")
-                return None
 
-            # Set the URL which will be accessed
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPURL={len(url)},{timeout}',
-            )
-            if not success or "CONNECT" not in response:
-                self.log_error("Failed to set HTTPS URL")
-                return None
-                
-            response, success = self._send_command_interrupt(url)
-            if not success:
-                self.log_error("Failed to send URL")
-                return None 
-
-            # Send HTTPS POST request
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPPOST={len(body)},{timeout},{timeout}',
-                wait_time=10000
-            )
+            try:
+                # Set Server Name Indication feature 
+                response = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
+            except Exception as e:
+                raise Exception("Failed to configure SSL Server Name Indication feature")
             
-            if not success or "CONNECT" not in response:
-                self.log_error(f"Failed to initiate HTTPS POST: {response}")
-                self.close_https_connection()
-                return None
-
+            try:
+                # Set the URL which will be accessed
+                response = self._send_command_interrupt(f'AT+QHTTPURL={len(url)},{timeout}')
+                if "CONNECT" not in response:
+                    raise Exception()   
+            except Exception as e:
+                raise Exception("Failed to set HTTPS URL")
             
-            response, success = self._send_https_post_body(body)
+            try:
+                # Send the URL which will be accessed
+                response  = self._send_command_interrupt(url) 
+            except Exception as e:
+                raise Exception("Failed to send URL")
 
-            match = re.search(r"\+QHTTPPOST: \d+,(\d+)", response)
-            if not success or not match:
-                self.log_error(f"HTTPS POST request failed: {response}")
-                self.close_https_connection()
-                return None
 
-            http_status = int(match.group(1))
-            if http_status <200 or http_status >=300:
-                self.log_error(f"HTTPS POST request failed (STATUS CODE: {http_status}): {response}")
-                self.close_https_connection()
-                return None
-            else:
-                self.log_info(f"HTTPS POST request succeeded with status code: {http_status}")
+            try:
+                # Send HTTPS POST request
+                response = self._send_command_interrupt(f'AT+QHTTPPOST={len(body)},{timeout},{timeout}',wait_time=10000)
+                if "CONNECT" not in response:
+                    raise Exception()   
+            except Exception as e:
+                    raise Exception(f"Failed to initiate HTTPS POST")
+
+            try:
+                # Send POST body
+                response = self._send_https_post_body(body)
+                match = re.search(r"\+QHTTPPOST: \d+,(\d+)", response)
+                if not match:
+                    raise Exception()
+                http_status = int(match.group(1))
+                if http_status <200 or http_status >=300:
+                    self.log_error(f"HTTPS POST request failed (STATUS CODE: {http_status}): {response}")
+                    raise Exception()
+                else:
+                    self.log_info(f"HTTPS POST request succeeded with status code: {http_status}")
+            except Exception as e:
+                    raise Exception("Failed to send HTTPS POST body")
             
-            response, success = self._send_command_interrupt(
-                f'AT+QHTTPREAD={timeout}'
-            )
+            try:
+                response = self._send_command_interrupt(f'AT+QHTTPREAD={timeout}')
+            except Exception as e:
+                raise Exception("Failed to read HTTPS POST response")
             
             # Cleanup connection
             self.close_https_connection()
-            
-            if success and response:
-                # Clean up the response
-                cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
-                self.log_info("HTTPS POST request completed successfully")
-                return cleaned_response
-            else:
-                self.log_error("Failed to read HTTPS POST response")
-                return None
+
+            cleaned_response = response.replace("CONNECT", "").replace("OK", "").replace("+QHTTPREAD: 0", "").strip()
+            self.log_info("HTTPS POST request completed successfully")
+
+            return cleaned_response
 
         except Exception as e:
-            self.log_error(f"HTTPS POST request error: {e}")
+            self.log_error(f"HTTPS POST request error: \"{e}\"")
             self.close_https_connection()
             return None
 
     def _send_https_post_body(self, body: str):
+        try:
 
-        response=None
-        success=False
+            response=None
+            success=False
 
-        command="GENERIC_INPUT"
+            command="POST_BODY"
 
-        wait_time = self.MAX_RESP_TIME.get(command, 5000)
-        wait_time = max(wait_time, self._min_wait_time)       
+            wait_time = self.MAX_RESP_TIME.get(command, 5000)
+            wait_time = max(wait_time, self._min_wait_time)       
 
-        self._rx_buffer_manager.set_pending_status(command, caller="_send_https_post_body")
+            self._rx_data_manager.set_pending_state(command, caller=self._send_https_post_body.__name__)
 
-        # Send body data in chunks
-        self.log_debug("Sending POST body data...")
-        chunk_size = 128
-        body_bytes = body.encode('utf-8') if isinstance(body, str) else body
-        
-        for i in range(0, len(body_bytes), chunk_size):
-            chunk = body_bytes[i:i+chunk_size]
-            self._uart.write(chunk)
-            self._uart.flush()
-            time.sleep_ms(10)  # Small delay between chunks
+            # Send body data in chunks
+            self.log_debug("Sending POST body data...")
+            chunk_size = 128
+            body_bytes = body.encode('utf-8') if isinstance(body, str) else body
+            
+            for i in range(0, len(body_bytes), chunk_size):
+                chunk = body_bytes[i:i+chunk_size]
+                self._uart.write(chunk)
+                self._uart.flush()
+                time.sleep_ms(10)  # Small delay between chunks
 
-        # Wait for POST completion and read response
-        #time.sleep(2)  # Allow time for POST to complete
+            # Wait for POST completion and read response
+            #time.sleep(2)  # Allow time for POST to complete
 
-        self.log_debug("Body sent!")
+            self.log_debug("Body sent!")
 
-        response, success = self._rx_buffer_manager.read_from_buffer(wait_time, caller="_send_https_post_body")
-        self.log_debug(f"Received response: {response}")
+            response, success = self._rx_data_manager.read_received_data(wait_time, caller=self._send_https_post_body.__name__)
+            if not success:
+                raise Exception(f"Received an ERROR response: {response}")
+            
+            self.log_debug(f"Received response: {response}")
 
-        return response, success
+            return response
+        except Exception as e:
+            self.log_error(f"Error sending HTTPS POST body: \"{e}\"")
+            raise Exception("Error sending HTTPS POST body")
+
 
     def close_https_connection(self):
         """
@@ -1116,14 +1121,12 @@ class Eg91SenderV5():
             self.log_debug("Closing HTTPS connection")
             
             # Stop HTTP service
-            response, success = self._send_command_interrupt("AT+QHTTPSTOP")
-            if not success:
-                self.log_info("Failed to stop HTTP service cleanly")
+            response = self._send_command_interrupt("AT+QHTTPSTOP")
 
             self.log_debug("HTTPS connection closed")
             
         except Exception as e:
-            self.log_error(f"Error occured while closing HTTPS connection: {e}")
+            self.log_error("Error occured while closing HTTPS connection")
 
     def list_files(self):
         """
@@ -1171,7 +1174,7 @@ class Eg91SenderV5():
         try:
             self.log_debug(f"Reading content of file {filename}")
             command = f'AT+QFOPEN="UFS:{filename}",0'
-            response, success = self._send_command_interrupt(command)
+            response, success = self._send_command_interrupt(command, caller=self.read_file.__name__)
 
             if not success or "+QFOPEN:" not in response:
                 self.log_error(f"Error opening file {filename}: {response}")
@@ -1292,19 +1295,6 @@ class Eg91SenderV5():
             self.log_error(f"Error deleting all files: {e}")
             return False
     
-    def log_info(self, message: str):
-        print(f"[EG91] {message}")
-    
-    def log_error(self, message: str):
-        RED     = "\033[31m"
-        RESET   = "\033[0m"
-        print(f"{RED}[EG91 ERROR] {message}{RESET}")
-    
-    def log_debug(self, message: str):
-        YELLOW     = "\033[33m"
-        RESET   = "\033[0m"
-        print(f"{YELLOW}[EG91 DEBUG] {message}{RESET}")
-
     def get_signal_quality(self):
         """
         Check signal quality (RSSI and BER)
@@ -1338,3 +1328,4 @@ class Eg91SenderV5():
         except Exception as e:
             self.log_error(f"Error checking signal quality: {e}")
             return None
+

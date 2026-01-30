@@ -1,3 +1,4 @@
+from Loggable import Loggable
 from machine import Pin, I2S, idle, UART, SoftI2C, RTC
 import time
 import math
@@ -28,7 +29,7 @@ class Metadata:
         }
 
 
-class AudioAliNode:
+class AudioAliNode(Loggable):
 
     NODEID="alinodev-1"
     LTE_RESET_PIN = 3
@@ -45,6 +46,8 @@ class AudioAliNode:
     IDLE_TIME = 20  # seconds
 
     def __init__(self):
+
+        super().__init__(tag=AudioAliNode.__name__, info_color=Loggable.GREEN)
 
         self.sd_buffer = SDBuffer(
             spi_id=1,
@@ -122,16 +125,18 @@ class AudioAliNode:
             if eg91.enable():
                 self.LTESender = eg91
                 current_time, _ = self.LTESender.get_time()
-                #self.log_info(f"Current time: {current_time}")
-                try:
-                    self.synchronize_time(current_time)
-                    self.log_info(f"Local clock synchronized: {self.get_current_time()}")
-                except Exception as e:
-                    self.log_error(e)
+                if current_time:
+                    try:
+                        self.synchronize_time(current_time)
+                        self.log_info(f"Local clock synchronized: {self.get_current_time()}")
+                    except Exception as e:
+                        self.log_error(e)
+                        self.close_LTE_Connection()
+                else:
+                    self.log_error("Failed to get current time from network")
                     self.close_LTE_Connection()
             else:
                 self.log_error("Failed to enable EG91 sender\n")
-                
         except Exception as e:
             config={}
             self.log_error("Caught exception {} {}".format(type(e).__name__, e))
@@ -365,16 +370,6 @@ class AudioAliNode:
         else:
             raise Exception("An error occurred while sending the chunk to the server")
     
-    def log_info(self, message):
-        GREEN     = "\033[32m"
-        RESET   = "\033[0m"
-        print(f"{GREEN}[AliNode] {message}{RESET}")
-
-    def log_error(self, message):
-        RED     = "\033[31m"
-        RESET   = "\033[0m"
-        print(f"{RED}[AliNode] {message}{RESET}")
-
     def synchronize_time(self, current_time):
         try:
             regex_string=ure.compile(
