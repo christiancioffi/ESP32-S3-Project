@@ -106,6 +106,7 @@ class RXDataManager(Loggable):
             self._reset_status()
             self._response_lock.release()
             #------------Lock released------------
+            self.log_info(f"({caller}) Lock released (response reading)")
             raise Exception(f"Timeout occurred while waiting for a response")
         self._response_lock.release()
         #------------Lock released------------

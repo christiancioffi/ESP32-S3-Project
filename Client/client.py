@@ -3,7 +3,7 @@ from machine import Pin, I2S, idle, UART, SoftI2C, RTC
 import time
 import math
 import struct
-from eg91_sender_v5 import Eg91SenderV5 
+from eg91_sender_v5 import Eg91Sender 
 import ujson
 from SDBuffer import SDBuffer
 from soc_driver import SocDriver
@@ -114,7 +114,7 @@ class AudioAliNode(Loggable):
             
             self.eg91_uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
 
-            eg91 = Eg91SenderV5(self.eg91_uart, config)
+            eg91 = Eg91Sender(self.eg91_uart, config)
 
             # Power cycle
             Pin(self.LTE_POWER_PIN, Pin.OUT).on()
@@ -422,6 +422,7 @@ class AudioAliNode(Loggable):
                             if chunk:
                                 self.log_info("Chunk sent to the server...")
                         except Exception as e:
+                            self.log_error("Error sending chunk to the server: \"{}\"".format(e))
                             break
                     '''
                     self.setup_LTE_Connection()
@@ -441,7 +442,7 @@ class AudioAliNode(Loggable):
                     self.log_info("Buffer NOT full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
                     
             except Exception as e:
-                self.log_error("A problem occurred during this iteration: {}".format(e))
+                self.log_error("A problem occurred during this iteration: \"{}\"".format(e))
             
             self.log_info("Sleeping...")
             time.sleep(self.IDLE_TIME)

@@ -10,7 +10,7 @@ import re
 import micropython
 
 #TODO: save ip addr and send via log
-class Eg91SenderV5(Loggable):
+class Eg91Sender(Loggable):
     """
         Improved Sender class to control Quectel EG915N radio with interrupt-based UART communication.
 
@@ -108,7 +108,7 @@ class Eg91SenderV5(Loggable):
     def __init__(self, adapter, config: dict):
         try:
 
-            super().__init__(Eg91SenderV5.__name__)
+            super().__init__(Eg91Sender.__name__)
 
             if config["adapter"] != "uart" or not isinstance(adapter, UART):
                 self.log_error("invalid adapter type, must be uart")
@@ -445,11 +445,11 @@ class Eg91SenderV5(Loggable):
                         nvs.set_i32("lora_retry", 0)
                         nvs.commit()
                     except Exception as e:
-                        self.log_error(f"NVS write error for lora_retry in eg91: {e}")
+                        self.log_error(f"NVS write error for lora_retry in eg91: \"{e}\"")
                     return True
                 
                 except Exception as e:
-                    self.log_error(f"Enable attempt {attempt + 1} failed: {e}")
+                    self.log_error(f"Enable attempt {attempt + 1} failed: \"{e}\"")
                     return False
         return True
     
