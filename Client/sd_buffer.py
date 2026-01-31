@@ -1,13 +1,17 @@
 import math
 import os
+from Loggable import Loggable
 from machine import Pin, SDCard, SPI
 import time
 import sys
 
-class SDBuffer:
+class SDBuffer(Loggable):
     def __init__(self, spi_id=1, sck_pin=12, mosi_pin=11, miso_pin=13, cs_pin=1, max_buffer_size=13 * 1024 * 1024 * 1024, files_threshold=20):  # 13 GB di default (su 14,83 GB a disposizione)
 
+        super().__init__(SDBuffer.__name__)
+
         self.SD_PATH = "/sd"
+        self.FILES_DIR = "Audio"
         self.prefix = "audio_"
         self.suffix = ".wav"
         self.queue = []  # lista dei file in ordine FIFO
@@ -20,6 +24,14 @@ class SDBuffer:
         self.vfs = os.VfsFat(self.sd)
         os.mount(self.vfs, self.SD_PATH)
         self.log_info(f"SD mounted on {self.SD_PATH}")
+
+        # Crea directory per i file audio se non esiste
+        try:
+            os.mkdir(self.SD_PATH + "/" + self.FILES_DIR)
+        except Exception as e:
+            pass
+
+        self.log_info(f"Audio files directory: {self.SD_PATH}/{self.FILES_DIR}")
 
         sd_stats = os.statvfs(self.SD_PATH)
 
@@ -38,7 +50,7 @@ class SDBuffer:
             os.umount(self.SD_PATH)
             raise e
 
-    def __del__(self):
+    def deinit(self):
         try:
             os.umount(self.SD_PATH)
             self.log_info("SD unmounted")
@@ -50,7 +62,7 @@ class SDBuffer:
     # -----------------------
     def _load_queue(self):
         try:
-            files = [f for f in os.listdir(self.SD_PATH)
+            files = [f for f in os.listdir(self.SD_PATH + "/" + self.FILES_DIR)
                     if f.startswith(self.prefix) and f.endswith(self.suffix)]
 
             def extract_num(name):
@@ -64,7 +76,7 @@ class SDBuffer:
             self.queue = files
             for f in self.queue:
                 try:
-                    path=self.SD_PATH + "/" + f
+                    path=self.SD_PATH + "/" + self.FILES_DIR + "/" + f
                     st = os.stat(path)
                     file_size = st[6]
                     file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
@@ -90,7 +102,7 @@ class SDBuffer:
         while requested_space > self.available_space() and len(self.queue) > 0:
             try:
                 oldest = self.queue[0]
-                path=self.SD_PATH + "/" + oldest
+                path=self.SD_PATH + "/" + self.FILES_DIR + "/" + oldest
                 st = os.stat(path)
                 file_size = st[6]
                 file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
@@ -114,7 +126,7 @@ class SDBuffer:
             self._free_space(file_used_space)
 
             filename = self.prefix + str(int(time.time() * 1000)) + self.suffix
-            path = self.SD_PATH + "/" + filename
+            path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
 
             with open(path, "wb") as f:
                 f.write(data_bytes)
@@ -138,7 +150,7 @@ class SDBuffer:
 
         try:
             filename = self.queue[0]
-            path = self.SD_PATH + "/" + filename
+            path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
 
             # Legge il file
             with open(path, "rb") as f:
@@ -164,7 +176,7 @@ class SDBuffer:
         while len(self.queue) > 0:
             try:
                 filename = self.queue[0]
-                path = self.SD_PATH + "/" + filename
+                path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
 
                 st = os.stat(path)
                 os.remove(path)
@@ -193,14 +205,6 @@ class SDBuffer:
     
     def get_used_space(self):
         return self.used_space
-
-    def log_error(self, message):
-        RED     = "\033[31m"
-        RESET   = "\033[0m"
-        print(f"{RED}[SDBuffer ERROR] {message}{RESET}")
-    
-    def log_info(self, message):
-        print("[SDBuffer] {}".format(message))
 
     def _get_total_free_space(self):    # In FAT blocks=clusters
         stat = os.statvfs(self.SD_PATH)

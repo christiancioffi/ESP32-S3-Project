@@ -44,22 +44,11 @@ class RXDataManager(Loggable):
             self._is_response_erroneous=False
         self.log_info(f"({caller}) Lock released (Pending state initialization)")
     
-    def handle_received_data(self, raw_data: bytes, caller: str = ""):
-        self.log_info(f"({caller}) Data received!")
-        self.log_info(f"({caller}) {len(raw_data)} bytes read from UART")
-        self.log_debug(f"({caller}) Raw data: {raw_data}")
+    def handle_received_data(self, data: bytes, caller: str = ""):
         self.log_info(f"({caller}) Waiting for lock (handling received data)")
         self._response_lock.acquire()
         #------------Lock acquired------------
         self.log_info(f"({caller}) Lock acquired (handling received data)")
-
-        try:
-            data=raw_data.decode('utf-8')
-        except Exception as e:
-            self._response_lock.release()
-            #------------Lock released------------
-            self.log_info(f"({caller}) Lock released (handling received data)")
-            raise Exception(f"Error decoding received data")
 
         if self._command_pending:
             try:
@@ -91,6 +80,7 @@ class RXDataManager(Loggable):
         try:
             self._event_loop.run_until_complete(self._wait_response(wait_time))
         except asyncio.TimeoutError:
+            self.log_error(f"({caller}) TIMEOUT")
             pass
         
         self.log_info(f"({caller}) Waiting for lock (response reading)")
@@ -117,6 +107,6 @@ class RXDataManager(Loggable):
     async def _wait_response(self, timeout):
         self.log_debug(f"Waiting for response for {timeout} ms...")
         await asyncio.wait_for_ms(self._reception_tsf.wait(), timeout)
-        time.sleep(0)                           #Per permettere, eventualmente, al callback handler di essere eseguito
+        #time.sleep(0)                           #Per permettere, eventualmente, al callback handler di essere eseguito
         self.log_debug("Waiting terminated")
 

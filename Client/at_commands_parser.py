@@ -60,8 +60,14 @@ class ATCommandsParser(Loggable):
             for cmd, pattern in self.COMMAND_PATTERNS
         ]
 
+        self.RESPONSE_PATTERNS = {
+            command: re.compile(pattern)
+            for command, pattern in self.RESPONSE_PATTERNS.items()
+        }
+
     def parse_response(self, command: str, data: str):
         try:
+            #self.log_debug("Parsing data: {}".format(data))
             recognized_command=self._get_recognized_command(command.strip())
             self.log_debug(f"Command pattern identified: {recognized_command}")
             response_pattern=self.RESPONSE_PATTERNS.get(recognized_command, None)
@@ -72,15 +78,14 @@ class ATCommandsParser(Loggable):
                 self.log_error(f"Unknown command: {command}")
                 return None, None
             
-            response_regex=re.compile(response_pattern)
-            matched_response=response_regex.search(data)
+            matched_response=response_pattern.search(data)
 
             if matched_response:
                 self.log_debug(f"Matched response: {matched_response.group(0)}")
                 response = matched_response.group(0)
             else:
-                error_regex=re.compile(self.RESPONSE_PATTERNS["ERROR"])
-                matched_error=error_regex.search(data)
+                error_pattern=self.RESPONSE_PATTERNS["ERROR"]
+                matched_error=error_pattern.search(data)
                 if matched_error:
                     self.log_debug(f"Matched error response: {matched_error.group(0)}")
                     error= matched_error.group(0)

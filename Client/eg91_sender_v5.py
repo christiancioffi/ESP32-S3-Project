@@ -4,7 +4,7 @@ import time
 import ujson
 from Loggable import Loggable
 from rx_data_manager import RXDataManager
-from machine import UART
+from machine import UART, Pin
 import esp32
 import re
 import micropython
@@ -18,30 +18,6 @@ class Eg91Sender(Loggable):
         access and manage local filesystem and perform HTTPS GET/POST requests.
 
     """
-    '''
-    COMMANDS_PATTERNS={
-        'AT':["AT"],
-        'ATE0':["ATE0"],
-        'AT+CREG':["AT+CREG?"],
-        'AT+CPIN?':["AT+CPIN"],
-        'AT+QICSGP': 
-            ['AT+QICSGP=<contextID>[,<context_type>,<APN>[,<username>,<password>[,<authentication>]]]'],
-        'AT+QIACT': ['AT+QIACT?','AT+QIACT=<contextID>'],
-        'AT+QIDEACT': ['AT+QIDEACT=<contextID>'],
-        'AT+QLTS': ['AT+QLTS=<mode>'],
-        'AT+QHTTPCFG': ['AT+QHTTPCFG="contextid"[,<contextID>]',
-                        'AT+QHTTPCFG="sslctxid"[,<sslctxID>]',
-                        'AT+QHTTPCFG="contenttype"[,<content_type>]',
-                        'AT+QHTTPCFG="responseheader"[,<response_header>]'],
-        'AT+QSSLCFG':['AT+QSSLCFG="sni",<sslctxID>[,<sni>]'],
-        'AT+QHTTPURL':['AT+QHTTPURL=<URL_length>[,<timeout>]'],
-        'AT+QHTTPGET':['AT+QHTTPGET[=<rsptime>]'],
-        'AT+QHTTPREAD':['AT+QHTTPREAD[=<wait_time>]'],
-        'AT+QHTTPPOST':['AT+QHTTPPOST=<data_length>[,<input_time>,<rsptime>]'],
-        'AT+QHTTPSTOP':['AT+QHTTPSTOP'],
-        'INPUT': ['URL','GENERIC_INPUT']
-    }
-    '''
 
     MAX_RESP_TIME = {
         # SIM/APN commands
@@ -81,7 +57,9 @@ class Eg91Sender(Loggable):
         "AT+QHTTPREAD": 10000,
         "AT+QHTTPPOST": 80000,
         "AT+QHTTPSTOP": 5000,
-        "GENERIC_INPUT": 80000
+        "GENERIC_INPUT": 80000,
+
+        "AT+QPOWD": 60000
     }
 
     # MQTT and HTTP(S) context
@@ -105,16 +83,52 @@ class Eg91Sender(Loggable):
     STATE_CONNECTED = 2
     STATE_ERROR = 3
 
-    def __init__(self, adapter, config: dict):
+    def __init__(self, uart_tx_pin, uart_rx_pin, lte_power_pin, lte_reset_pin):
         try:
 
             super().__init__(Eg91Sender.__name__)
+            
+            self.log_info("Initializing EG91 sender module...")
 
-            if config["adapter"] != "uart" or not isinstance(adapter, UART):
-                self.log_error("invalid adapter type, must be uart")
-                raise ValueError("Invalid adapter type, must be uart")
-            else:
-                self._uart = adapter
+            self.UART_TX_PIN = uart_tx_pin
+            self.UART_RX_PIN = uart_rx_pin
+            self.LTE_POWER_PIN = lte_power_pin
+            self.LTE_RESET_PIN = lte_reset_pin
+            self.IDLE_TIME_POWER_CYCLE_STEP_1=1
+            self.IDLE_TIME_POWER_CYCLE_STEP_2=15
+            self.POWERED_ON=False
+
+            # Connection state management
+            self._connection_state = self.STATE_DISCONNECTED
+            self._mqtt_connected = False
+            self._network_registered = False
+            self._received_mqtt_data = {}
+            self._rx_bytes_to_read = 2048
+            self._min_wait_time = 5000  # Minimum wait time in ms
+            self._unsolicited_messages = []
+            self.ENABLED = False
+            self._rx_data_manager=RXDataManager()
+
+            self._uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
+
+            self.log_info("Powering on EG91 module...")
+
+            # Power cycle
+            Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+            time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
+            Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+            time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+
+            self.POWERED_ON=True
+            
+            self.log_info("EG91 module powered on")
+
+            config={}
+            try:
+                with open("config.json") as f:
+                    config = ujson.loads(f.read())
+            except Exception as e:
+                raise OSError("Failed to read configuration file: {}".format(e))
 
             self._apn = config["apn"]
             self._endpoint = config["endpoint"]
@@ -134,63 +148,71 @@ class Eg91Sender(Loggable):
             else:
                 raise KeyError("auth_type")
 
-            # Connection state management
-            self._connection_state = self.STATE_DISCONNECTED
-            self._mqtt_connected = False
-            self._network_registered = False
-            self._received_mqtt_data = {}
-            self._received_data_handler=self._handle_new_data
-            '''
-            self._event_loop=asyncio.get_event_loop()
-            self._reception_tsf=asyncio.ThreadSafeFlag()
-            self._rx_buffer=""
-            self._response_ready = False
-            self._command_pending = False
-            self._is_response_erroneous = False
-            self._current_command = None
-            self._response_lock = _thread.allocate_lock()
-            self._parser=ATCommandsParser()
-            '''
-            self._rx_bytes_to_read = 2048
-            self._min_wait_time = 5000  # Minimum wait time in ms
-            self._unsolicited_messages = []
-            self.ENABLED = False
-            self._rx_data_manager=RXDataManager()
-
             # Initialize interrupt-based communication
             self._init_uart_interrupt()
+
+            if not self._enable():
+                raise Exception("Failed to enable EG91 sender")
+                
         except KeyError as key:
             raise ValueError(f"Invalid config value: {key}")
+        except Exception as e:
+            self.log_error(f"EG91 initialization failed: \"{e}\"")
+            raise RuntimeError(f"EG91 initialization failed")
+
+    def deinit(self):
+        """Deinitialize EG91 sender"""
+        try:
+            self._disable()
+            self._uart.irq(trigger=0, handler=None)
+            self._uart.deinit()
+            if self.POWERED_ON:
+                #time.sleep(self.IDLE_TIME_AFTER_SW_SHUTDOWN)
+                self.log_info("Shutting down EG91 module...")
+                Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+                time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
+                Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+                time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+                self.log_info("EG91 module shut down successfully")
+                self.POWERED_ON=False
+        except Exception as e:
+            self.log_error(f"Error during EG91 deinitialization: \"{e}\"")
 
     def _init_uart_interrupt(self):
         """Initialize interrupt-based UART communication"""
 
         # Set up UART interrupt for incoming data
-        self._uart.irq(trigger=UART.IRQ_RX, handler=self._uart_irq_handler)
+        self._uart.irq(trigger=UART.IRQ_RXIDLE, handler=self._uart_irq_handler) #RX
         self.log_debug("UART interrupt initialized")
 
-    def _uart_irq_handler(self, uart_obj):
+    def _uart_irq_handler(self, uart_obj):          #Soft Interrupt (callback)
         """UART interrupt handler - called when data is received"""
         try:
+            self.log_debug("UART IRQ handler triggered")
             num_bytes = uart_obj.any()
             if num_bytes > 0:
-                micropython.schedule(self._received_data_handler, None)
-            #else:
-                #self.log_debug("(_uart_irq_handler) No data available in UART")
+
+                raw_data = self._uart.read(self._rx_bytes_to_read)
+
+                if raw_data:
+                    self.log_info(f"({self._uart_irq_handler.__name__}) Data received!")
+                    self.log_info(f"({self._uart_irq_handler.__name__}) {len(raw_data)} bytes read from UART")
+                    self.log_debug(f"({self._uart_irq_handler.__name__}) Raw data: {raw_data}")
+
+                    data=""
+
+                    try:
+                        data=raw_data.decode('utf-8')
+                    except Exception as e:
+                        data=''.join(chr(b) for b in raw_data)
+
+                    self._rx_data_manager.handle_received_data(data, caller=self._uart_irq_handler.__name__)
+                else:
+                    self.log_debug(f"({self._uart_irq_handler.__name__}) No data read from UART")
+            else:
+                self.log_debug(f"({self._uart_irq_handler.__name__}) No data available in UART")
         except Exception as e:
-            self.log_error(f"UART IRQ handler error: {e}")
-
-    def _handle_new_data(self, _):
-        """Handle received data outside of interrupt context"""
-
-        try:
-            raw_data = self._uart.read(self._rx_bytes_to_read)
-
-            if raw_data:
-                self._rx_data_manager.handle_received_data(raw_data, caller=self._handle_new_data.__name__)
-
-        except Exception as e:
-            self.log_error(f"Error handling new received data: \"{e}\"")
+            self.log_error(f"UART IRQ handler error: \"{e}\"")
 
     def _send_command_interrupt(self, command, wait_time=None) -> str:
         """
@@ -381,12 +403,12 @@ class Eg91Sender(Loggable):
             self.log_error(f"Recovery sequence failed: {e}")
             return False
 
-    def enable(self):
+    def _enable(self):
         """
         Enable sender module with improved error handling and recovery
         """
         if not self.ENABLED:
-            self.log_info("Enabling EG91 sender module")
+            self.log_info("Enabling EG91 sender module...")
             #TODO: get data diagnostic, AT
 
             max_retries = 1
@@ -397,7 +419,7 @@ class Eg91Sender(Loggable):
 
                     # Clear buffers
                     self._uart.read(10000)
-                    self._rx_data_manager.clear_state(caller=self.enable.__name__)
+                    self._rx_data_manager.clear_state(caller=self._enable.__name__)
 
                     # Basic configuration with error checking
                     self.log_debug("Starting basic configuration")
@@ -600,7 +622,7 @@ class Eg91Sender(Loggable):
             # Check connection status first
             if not self._mqtt_connected:
                 self.log_info("MQTT not connected, attempting reconnection")
-                if not self.enable():
+                if not self._enable():
                     return False
 
             response, success = self._send_command_interrupt(
@@ -667,7 +689,7 @@ class Eg91Sender(Loggable):
             self.log_error(f"Error closing MQTT connection: {e}")
             return False
     
-    def disable(self):
+    def _disable(self):
         try:
             if self.ENABLED:
                 self.log_info("Disabling EG91 sender module")
@@ -677,16 +699,13 @@ class Eg91Sender(Loggable):
                 # Deactivate context
                 self._deactivate_pdp_context()
 
-                # Disable UART interrupt
-                self._uart.irq(trigger=0, handler=None)
-
                 self.ENABLED=False
 
                 self.log_info("EG91 sender module disabled successfully")
             else:
                 self.log_info("EG91 sender module already disabled")
         except Exception as e:
-            self.log_error(f"Error disabling EG91 sender module: {e}")
+            self.log_error(f"Error disabling EG91 sender module: \"{e}\"")
             self.ENABLED=False
 
     def is_powered_on(self):
@@ -697,7 +716,7 @@ class Eg91Sender(Loggable):
                 "AT", wait_time=2000)
             return success
         except Exception as e:
-            print(e)
+            self.log_error(f"Error checking power status: \"{e}\"")
             return False
 
     def get_mqtt_connection_status(self):
@@ -738,7 +757,7 @@ class Eg91Sender(Loggable):
             return None, None
 
         except Exception as e:
-            self.log_error(f"Time command failed: {e}")
+            self.log_error(f"Time command failed: \"{e}\"")
             return None, None
 
 
@@ -763,7 +782,7 @@ class Eg91Sender(Loggable):
                 return False
 
         except Exception as e:
-            self.log_error(f"Delete retained message error: {e}")
+            self.log_error(f"Delete retained message error: \"{e}\"")
             return False
 
     def upload_to_ufs(self, name: str, content: str) -> bool:
@@ -1111,7 +1130,6 @@ class Eg91Sender(Loggable):
         except Exception as e:
             self.log_error(f"Error sending HTTPS POST body: \"{e}\"")
             raise Exception("Error sending HTTPS POST body")
-
 
     def close_https_connection(self):
         """
