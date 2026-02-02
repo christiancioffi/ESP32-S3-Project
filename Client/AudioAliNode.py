@@ -127,7 +127,7 @@ class AudioAliNode(Loggable):
                 self.lte_sender.deinit()
                 self.lte_sender = None
                 self.log_info("LTE module deinitialized successfully")
-            except Exception as e:
+            except (KeyboardInterrupt,Exception) as e:
                 self.log_error("Failed to deinitialize LTE module: \"{}\"".format(e))
 
     def get_battery_level(self):

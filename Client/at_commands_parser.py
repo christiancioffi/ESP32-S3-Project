@@ -13,6 +13,7 @@ class ATCommandsParser(Loggable):
     COMMAND_PATTERNS=[  # command : command pattern
         ("AT","AT"),
         ("ATE0","ATE0"),
+        ("AT+QPOWD[=<n>]","AT\+QPOWD(=\d)?"),
         ("AT+CREG?","AT\+CREG\?"),
         ("AT+CPIN?","AT\+CPIN\?"),
         ("AT+QICSGP=<contextID>[,<context_type>,<APN>[,<username>,<password>[,<authentication>]]]","AT\+QICSGP=\d(\d)?(,[1-3],\".*\"(,\".*\",\".*\"(,[0-3])?)?)?"),
@@ -34,6 +35,7 @@ class ATCommandsParser(Loggable):
     RESPONSE_PATTERNS={ # command : response pattern
         'AT' : "AT\r\r\nOK\r\n",
         'ATE0': "ATE0\r\r\nOK\r\n",
+        "AT+QPOWD[=<n>]": "\r\nOK\r\n\r\nPOWERED DOWN\r\n",
         'AT+CREG?': f"\r\n\+CREG: \d+,\d+(,\"{"[0-9a-f]"*4}\",\"{"[0-9a-f]"*4}{"[0-9a-f]?"*3}\"(,\d+)?)?\r\n\r\nOK\r\n",
         'AT+CPIN?': "\r\n\+CPIN: (.+)\r\n\r\nOK\r\n",
         'AT+QICSGP=<contextID>[,<context_type>,<APN>[,<username>,<password>[,<authentication>]]]': "\r\nOK\r\n",

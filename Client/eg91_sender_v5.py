@@ -103,13 +103,13 @@ class Eg91Sender(Loggable):
             self._mqtt_connected = False
             self._network_registered = False
             self._received_mqtt_data = {}
-            self._rx_bytes_to_read = 2048
+            self._max_buffer_size = 2048
             self._min_wait_time = 5000  # Minimum wait time in ms
             self._unsolicited_messages = []
             self.ENABLED = False
             self._rx_data_manager=RXDataManager()
 
-            self._uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000)
+            self._uart = UART(1, baudrate=115200, tx=Pin(self.UART_TX_PIN), rx=Pin(self.UART_RX_PIN), timeout=3000, rxbuf=self._max_buffer_size)
 
             self.log_info("Powering on EG91 module...")
 
@@ -167,7 +167,6 @@ class Eg91Sender(Loggable):
             self._uart.irq(trigger=0, handler=None)
             self._uart.deinit()
             if self.POWERED_ON:
-                #time.sleep(self.IDLE_TIME_AFTER_SW_SHUTDOWN)
                 self.log_info("Shutting down EG91 module...")
                 Pin(self.LTE_POWER_PIN, Pin.OUT).on()
                 time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
@@ -175,6 +174,21 @@ class Eg91Sender(Loggable):
                 time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
                 self.log_info("EG91 module shut down successfully")
                 self.POWERED_ON=False
+                '''
+                try:
+                    response = self._send_command_interrupt("AT+QPOWD", wait_time=self.MAX_RESP_TIME["AT+QPOWD"])
+                    self.log_info("EG91 module shut down successfully")
+                except Exception as e:
+                    self.log_error("Failed to power down EG91 module via AT+QPOWD")
+                    self.log_info("Shutting down EG91 module via power cycle...")
+                    Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+                    time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
+                    Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+                    time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+                    self.log_info("EG91 module shut down via power cycle")
+                finally:
+                    self.POWERED_ON=False
+                '''
         except Exception as e:
             self.log_error(f"Error during EG91 deinitialization: \"{e}\"")
 
@@ -192,7 +206,7 @@ class Eg91Sender(Loggable):
             num_bytes = uart_obj.any()
             if num_bytes > 0:
 
-                raw_data = self._uart.read(self._rx_bytes_to_read)
+                raw_data = self._uart.read(self._max_buffer_size)
 
                 if raw_data:
                     self.log_info(f"({self._uart_irq_handler.__name__}) Data received!")
