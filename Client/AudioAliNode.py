@@ -363,8 +363,8 @@ if __name__ == "__main__":
     try:
         alinode=AudioAliNode()
         #alinode.sd_buffer.clear_buffer()
-        #alinode.start()
-        alinode.test_start()
+        alinode.start()
+        #alinode.test_start()
     except (KeyboardInterrupt, Exception) as e:
         sys.print_exception(e)
     finally:
