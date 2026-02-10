@@ -1,18 +1,22 @@
-from Loggable import Loggable
+from Logging import Logging
 from machine import Pin, I2S
-import time
-import math
 import struct
-from wav_metadata import WAVMetadata
+import math
 
 
-class I2SDriver(Loggable):
+class I2SDriver():
 
-    def __init__(self, alinode: AudioAliNode,i2s_sck_pin: int, i2s_ws_pin: int, i2s_sd_pin: int):
+    def __init__(self, 
+                i2s_sck_pin: int, 
+                i2s_ws_pin: int, 
+                i2s_sd_pin: int,
+                buffer_length_in_bytes: int,
+                record_time_in_seconds: int,
+                wav_sample_size_in_bits: int,
+                format: int,
+                sample_rate_in_hz: int,
+                i2s_id: int = 0):
 
-        super().__init__(I2SDriver.__name__)
-
-        self.alinode = alinode
         self.I2S_SCK_PIN = i2s_sck_pin
         self.I2S_WS_PIN = i2s_ws_pin
         self.I2S_SD_PIN = i2s_sd_pin
@@ -20,14 +24,19 @@ class I2SDriver(Loggable):
         # MICROPHONE = Adafruit I2S MEMS Microphone Breakout - SPH0645LM4H
 
         # ======= I2S CONFIGURATION =======
-        self.I2S_ID = 0
-        self.BUFFER_LENGTH_IN_BYTES = 40000
+        self.I2S_ID = i2s_id
+        self.BUFFER_LENGTH_IN_BYTES = buffer_length_in_bytes
 
         # ======= AUDIO CONFIGURATION =======
-        self.RECORD_TIME_IN_SECONDS = 5  #10
-        self.WAV_SAMPLE_SIZE_IN_BITS = 32        #Slot bit width
-        self.FORMAT = I2S.MONO
-        self.SAMPLE_RATE_IN_HZ = 16_000  #Sampling rate = 16kHz
+        self.RECORD_TIME_IN_SECONDS = record_time_in_seconds
+        self.WAV_SAMPLE_SIZE_IN_BITS = wav_sample_size_in_bits        #Slot bit width
+        if format == "MONO":
+            self.FORMAT = I2S.MONO
+        elif format == "STEREO":
+            self.FORMAT = I2S.STEREO
+        else:
+            raise ValueError("Format not valid")
+        self.SAMPLE_RATE_IN_HZ = sample_rate_in_hz  #Sampling rate
 
 
         format_to_channels = {I2S.MONO: 1, I2S.STEREO: 2}
@@ -36,114 +45,6 @@ class I2SDriver(Loggable):
         self.RECORDING_SIZE_IN_BYTES = (
             self.RECORD_TIME_IN_SECONDS * self.SAMPLE_RATE_IN_HZ * self.WAV_SAMPLE_SIZE_IN_BYTES * self.NUM_CHANNELS
         )
-
-
-    def calculate_RMS(self, audio_bytes):
-        bytes_per_sample = self.WAV_SAMPLE_SIZE_IN_BITS // 8
-        frame_size = bytes_per_sample * self.NUM_CHANNELS
-        num_frames = len(audio_bytes) // frame_size
-
-        if num_frames == 0:
-            return 0.0
-
-        sum_squares = 0.0
-        sample_count = 0
-
-        for i in range(0, num_frames * frame_size, bytes_per_sample):
-            sample_bytes = audio_bytes[i:i + bytes_per_sample]
-
-            if self.WAV_SAMPLE_SIZE_IN_BITS == 8:
-                # 8-bit PCM è unsigned
-                sample = sample_bytes[0] - 128  # trasforma in signed (-128..127)
-
-            elif self.WAV_SAMPLE_SIZE_IN_BITS == 16:
-                # little-endian signed short
-                sample = struct.unpack("<h", sample_bytes)[0]
-
-            elif self.WAV_SAMPLE_SIZE_IN_BITS == 24:
-                # little-endian signed 24-bit
-                # aggiungiamo un byte di estensione di segno manuale
-                b = sample_bytes
-                if b[2] & 0x80:
-                    b += b'\xff'  # se il bit più alto è 1 -> negativo
-                else:
-                    b += b'\x00'  # altrimenti positivo
-                sample = struct.unpack("<i", b)[0] >> 8
-
-            elif self.WAV_SAMPLE_SIZE_IN_BITS == 32:
-                # little-endian signed int
-                sample = struct.unpack("<i", sample_bytes)[0]
-
-            else:
-                raise ValueError("bits_per_sample non supportato")
-
-            sum_squares += sample * sample
-            sample_count += 1
-
-        mean_square = sum_squares / sample_count
-        rmsv=math.sqrt(mean_square)
-        self.log_info(f"RMS value calculated: {rmsv}")
-        return rmsv
-
-    def get_metadata(self, chunk):
-        timestamp=time.time()
-        nodeID=self.alinode.get_node_id()
-        batteryLevel=self.alinode.get_battery_level()
-        rmsv=self.calculate_RMS(chunk)
-        return WAVMetadata(
-            tmst=timestamp,
-            noId=nodeID,
-            blvl=batteryLevel,
-            rmsv=rmsv).to_dict()
-
-    def create_wav_header(self, metadata=None):
-        datasize = self.RECORD_TIME_IN_SECONDS * self.SAMPLE_RATE_IN_HZ * self.WAV_SAMPLE_SIZE_IN_BYTES * self.NUM_CHANNELS
-
-        o = b"RIFF"
-        filesize_pos = len(o)
-        o += (0).to_bytes(4, "little")  # placeholder dimensione RIFF
-        o += b"WAVE"
-
-        # fmt chunk (PCM)
-        o += b"fmt "
-        o += (16).to_bytes(4, "little")
-        o += (1).to_bytes(2, "little")  # AudioFormat = PCM
-        o += self.NUM_CHANNELS.to_bytes(2, "little")
-        o += self.SAMPLE_RATE_IN_HZ.to_bytes(4, "little")
-        o += (self.SAMPLE_RATE_IN_HZ * self.NUM_CHANNELS * self.WAV_SAMPLE_SIZE_IN_BITS // 8).to_bytes(4, "little")
-        o += (self.NUM_CHANNELS * self.WAV_SAMPLE_SIZE_IN_BITS // 8).to_bytes(2, "little")
-        o += self.WAV_SAMPLE_SIZE_IN_BITS.to_bytes(2, "little")
-        # LIST / INFO chunk (metadati)
-        if metadata:
-            info_data = b"INFO"
-
-            for key, value in metadata.items():
-                self.log_info(f"Adding metadata key: {key} value: {value}")
-                if len(key) != 4:
-                    raise ValueError("Le chiavi INFO devono essere di 4 caratteri")
-
-                data = str(value).encode("ascii") + b"\x00"
-
-                if len(data) % 2 == 1:
-                    data += b"\x00"  # padding a 2 byte
-
-                info_data += key.encode("ascii")
-                info_data += len(data).to_bytes(4, "little")
-                info_data += data
-
-            o += b"LIST"
-            o += len(info_data).to_bytes(4, "little")
-            o += info_data
-
-        # data chunk
-        o += b"data"
-        o += datasize.to_bytes(4, "little")
-
-        # aggiorna dimensione RIFF (file_size - 8)
-        filesize = len(o) - 8 + datasize
-        o = o[:filesize_pos] + filesize.to_bytes(4, "little") + o[filesize_pos + 4:]
-
-        return o
 
     def get_single_audio_chunk(self):
 
@@ -169,8 +70,8 @@ class I2SDriver(Loggable):
 
         num_sample_bytes_written_to_wav = 0
 
-        self.log_info("Recording size: {} bytes".format(self.RECORDING_SIZE_IN_BYTES))
-        self.log_info("==========  START RECORDING ==========")
+        Logging.log_info("Recording size: {} bytes".format(self.RECORDING_SIZE_IN_BYTES))
+        Logging.log_info("==========  START RECORDING ==========")
         try:
             while num_sample_bytes_written_to_wav < self.RECORDING_SIZE_IN_BYTES:
                 # read a block of samples from the I2S microphone
@@ -181,7 +82,7 @@ class I2SDriver(Loggable):
                     b1 = mic_samples_mv[i+1]
                     b2 = mic_samples_mv[i+2]
                     b3 = mic_samples_mv[i+3]
-                    self.log_info(i, ":", hex(b0), hex(b1), hex(b2), hex(b3))
+                    Logging.log_info(i, ":", hex(b0), hex(b1), hex(b2), hex(b3))
                 '''
                 if num_bytes_read_from_mic > 0:
                     num_bytes_to_write = min(
@@ -193,21 +94,115 @@ class I2SDriver(Loggable):
                     num_bytes_written = num_bytes_to_write
                     num_sample_bytes_written_to_wav += num_bytes_written
 
-            self.log_info("==========  DONE RECORDING ==========")
+            Logging.log_info("==========  DONE RECORDING ==========")
         except (KeyboardInterrupt, Exception) as e:
-            self.log_error("Caught exception {} {}".format(type(e).__name__, e))
+            Logging.log_error("Caught exception {} {}".format(type(e).__name__, e))
             raise Exception("An error occurred during audio recording")
         finally:
             self.i2s_audio_in.deinit()
 
-        metadata=self.get_metadata(wav_data)
+        #metadata=self.get_metadata(wav_data)
 
         # create header for WAV file and write to SD card
-        wav_header = self.create_wav_header(metadata)
+        #wav_header = self.create_wav_header(metadata)
         
-        wav_chunk=wav_header+wav_data
+        #wav_chunk=wav_header+wav_data
 
-        return wav_chunk
+        return wav_data
 
+    def create_wav_header(self, metadata=None):
+        datasize = self.RECORD_TIME_IN_SECONDS * self.SAMPLE_RATE_IN_HZ * self.WAV_SAMPLE_SIZE_IN_BYTES * self.NUM_CHANNELS
 
-from AudioAliNode import AudioAliNode   #Causa importo circolare tra I2SDriver e AudioAliNode
+        o = b"RIFF"
+        filesize_pos = len(o)
+        o += (0).to_bytes(4, "little")  # placeholder dimensione RIFF
+        o += b"WAVE"
+
+        # fmt chunk (PCM)
+        o += b"fmt "
+        o += (16).to_bytes(4, "little")
+        o += (1).to_bytes(2, "little")  # AudioFormat = PCM
+        o += self.NUM_CHANNELS.to_bytes(2, "little")
+        o += self.SAMPLE_RATE_IN_HZ.to_bytes(4, "little")
+        o += (self.SAMPLE_RATE_IN_HZ * self.NUM_CHANNELS * self.WAV_SAMPLE_SIZE_IN_BITS // 8).to_bytes(4, "little")
+        o += (self.NUM_CHANNELS * self.WAV_SAMPLE_SIZE_IN_BITS // 8).to_bytes(2, "little")
+        o += self.WAV_SAMPLE_SIZE_IN_BITS.to_bytes(2, "little")
+        # LIST / INFO chunk (metadati)
+        if metadata:
+            info_data = b"INFO"
+
+            for key, value in metadata.items():
+                Logging.log_info(f"Adding metadata key: {key} value: {value}")
+                if len(key) != 4:
+                    raise ValueError("INFO key must be 4 characters long")
+
+                data = str(value).encode("ascii") + b"\x00"
+
+                if len(data) % 2 == 1:
+                    data += b"\x00"  # padding a 2 byte
+
+                info_data += key.encode("ascii")
+                info_data += len(data).to_bytes(4, "little")
+                info_data += data
+
+            o += b"LIST"
+            o += len(info_data).to_bytes(4, "little")
+            o += info_data
+
+        # data chunk
+        o += b"data"
+        o += datasize.to_bytes(4, "little")
+
+        # aggiorna dimensione RIFF (file_size - 8)
+        filesize = len(o) - 8 + datasize
+        o = o[:filesize_pos] + filesize.to_bytes(4, "little") + o[filesize_pos + 4:]
+
+        return o
+
+    def calculate_RMS(self, audio_bytes):
+            bytes_per_sample = self.WAV_SAMPLE_SIZE_IN_BITS // 8
+            frame_size = bytes_per_sample * self.NUM_CHANNELS
+            num_frames = len(audio_bytes) // frame_size
+
+            if num_frames == 0:
+                return 0.0
+
+            sum_squares = 0.0
+            sample_count = 0
+
+            for i in range(0, num_frames * frame_size, bytes_per_sample):
+                sample_bytes = audio_bytes[i:i + bytes_per_sample]
+
+                if self.WAV_SAMPLE_SIZE_IN_BITS == 8:
+                    # 8-bit PCM è unsigned
+                    sample = sample_bytes[0] - 128  # trasforma in signed (-128..127)
+
+                elif self.WAV_SAMPLE_SIZE_IN_BITS == 16:
+                    # little-endian signed short
+                    sample = struct.unpack("<h", sample_bytes)[0]
+
+                elif self.WAV_SAMPLE_SIZE_IN_BITS == 24:
+                    # little-endian signed 24-bit
+                    # aggiungiamo un byte di estensione di segno manuale
+                    b = sample_bytes
+                    if b[2] & 0x80:
+                        b += b'\xff'  # se il bit più alto è 1 -> negativo
+                    else:
+                        b += b'\x00'  # altrimenti positivo
+                    sample = struct.unpack("<i", b)[0] >> 8
+
+                elif self.WAV_SAMPLE_SIZE_IN_BITS == 32:
+                    # little-endian signed int
+                    sample = struct.unpack("<i", sample_bytes)[0]
+
+                else:
+                    raise ValueError("bits_per_sample non supportato")
+
+                sum_squares += sample * sample
+                sample_count += 1
+
+            mean_square = sum_squares / sample_count
+            rmsv=math.sqrt(mean_square)
+            Logging.log_info(f"RMS value calculated: {rmsv}")
+            return rmsv
+

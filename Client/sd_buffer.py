@@ -1,29 +1,27 @@
 import math
 import os
-from Loggable import Loggable
-from machine import Pin, SDCard, SPI
+from Logging import Logging
 import time
 import sys
 
-class SDBuffer(Loggable):
-    def __init__(self, spi_id=1, sck_pin=12, mosi_pin=11, miso_pin=13, cs_pin=1, max_buffer_size=13 * 1024 * 1024 * 1024, files_threshold=20):  # 13 GB di default (su 14,83 GB a disposizione)
+class SDBuffer():
+    def __init__(self,
+                 sd_path,
+                 files_dir,
+                 file_prefix,
+                 file_suffix,
+                 max_buffer_size,
+                 files_threshold):  # 13 GB di default (su 14,83 GB a disposizione)
 
-        super().__init__(SDBuffer.__name__)
 
-        self.SD_PATH = "/sd"
-        self.FILES_DIR = "Audio"
-        self.prefix = "audio_"
-        self.suffix = ".wav"
+        self.SD_PATH = sd_path
+        self.FILES_DIR = files_dir
+        self.prefix = file_prefix
+        self.suffix = file_suffix
         self.queue = []  # lista dei file in ordine FIFO
         self.files_threshold = files_threshold
         self.max_buffer_size = max_buffer_size  
         self.used_space = 0
-
-        # Monta SD
-        self.sd = SDCard(slot=2,sck=Pin(sck_pin),mosi=Pin(mosi_pin),miso=Pin(miso_pin), cs=Pin(cs_pin, Pin.OUT))
-        self.vfs = os.VfsFat(self.sd)
-        os.mount(self.vfs, self.SD_PATH)
-        self.log_info(f"SD mounted on {self.SD_PATH}")
 
         # Crea directory per i file audio se non esiste
         try:
@@ -31,31 +29,20 @@ class SDBuffer(Loggable):
         except Exception as e:
             pass
 
-        self.log_info(f"Audio files directory: {self.SD_PATH}/{self.FILES_DIR}")
+        Logging.log_info(f"Audio files directory: {self.SD_PATH}/{self.FILES_DIR}")
 
         sd_stats = os.statvfs(self.SD_PATH)
 
         self.cluster_size = sd_stats[0]    # Dimensione del cluster in byte
 
-        free_space = sd_stats[0] * sd_stats[3]
-
-        if max_buffer_size > free_space:
-            os.umount(self.SD_PATH)
-            raise OSError("Buffer size ({}) too large for the available free space ({})".format(max_buffer_size, free_space))
-
         # Inizializza la coda dai file esistenti
         try:
             self._load_queue()
+            free_space = sd_stats[0] * sd_stats[3]
+            if max_buffer_size > (free_space+self.used_space):
+                raise OSError("Buffer size ({}) too large for the available free space ({})".format(max_buffer_size, free_space+self.used_space))
         except Exception as e:
-            os.umount(self.SD_PATH)
-            raise e
-
-    def deinit(self):
-        try:
-            os.umount(self.SD_PATH)
-            self.log_info("SD unmounted")
-        except OSError as e:
-            self.log_error("Error unmounting SD: {}".format(e))
+            raise Exception("SD Buffer initialization error: \"{}\"".format(e))
 
     # -----------------------
     # Load the queue from existing files on the SD
@@ -69,7 +56,7 @@ class SDBuffer(Loggable):
                 try:
                     return int(name[len(self.prefix):-len(self.suffix)])
                 except ValueError:
-                    self.log_error("Filename not valid:", name)
+                    Logging.log_error("Filename not valid:", name)
                     return 0
 
             files.sort(key=extract_num)
@@ -84,10 +71,10 @@ class SDBuffer(Loggable):
                 except OSError:
                     pass
             
-            self.log_info("Loaded {} files from SD, used space: {} bytes".format(len(self.queue), self.used_space))
-            self.log_info("Available space: {} bytes".format(self.available_space()))
+            Logging.log_info("Loaded {} files from SD, used space: {} bytes".format(len(self.queue), self.used_space))
+            Logging.log_info("Available space: {} bytes".format(self.available_space()))
         except Exception as e:
-            self.log_error("Error loading existing files from SD: {}".format(e))
+            Logging.log_error("Error loading existing files from SD: {}".format(e))
             raise Exception("SD Buffer load queue error")
 
     def available_space(self):
@@ -101,6 +88,7 @@ class SDBuffer(Loggable):
             raise OSError("File too large for buffer")
         while requested_space > self.available_space() and len(self.queue) > 0:
             try:
+                Logging.log_info("Freeing space from the buffer...")
                 oldest = self.queue[0]
                 path=self.SD_PATH + "/" + self.FILES_DIR + "/" + oldest
                 st = os.stat(path)
@@ -108,10 +96,11 @@ class SDBuffer(Loggable):
                 file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
                 os.remove(path)
                 self.queue.pop(0)
-                self.log_info("Removed old file '{}' of {} bytes (real size: {}) from buffer".format(oldest, file_size, file_used_space))
+                Logging.log_info("Removed old file '{}' of {} bytes (real size: {}) from buffer".format(oldest, file_size, file_used_space))
                 self.used_space = max(0, self.used_space - file_used_space)
+                Logging.log_info("Space freed successfully")
             except Exception as e:
-                self.log_error("Error removing old file {}: {}".format(oldest, e))
+                Logging.log_error("Error removing old file {}: {}".format(oldest, e))
                 raise Exception("SD Buffer free space error")
 
     # -----------------------
@@ -133,10 +122,10 @@ class SDBuffer(Loggable):
 
             self.queue.append(filename)
             self.used_space += file_used_space
-            self.log_info("Added file to buffer: {}, file size: {} bytes (real size: {} bytes)".format(filename, file_size, file_used_space))
+            Logging.log_info("Added file to buffer: {}, file size: {} bytes (real size: {} bytes)".format(filename, file_size, file_used_space))
 
         except Exception as e:
-            self.log_error("Error while adding file to the buffer: {}".format(e))
+            Logging.log_error("Error while adding file to the buffer: {}".format(e))
             sys.print_exception(e)
             raise Exception("SD Buffer enqueue error")
 
@@ -146,7 +135,30 @@ class SDBuffer(Loggable):
     # -----------------------
     def dequeue(self):
         if len(self.queue) == 0:
-            return None  # buffer vuoto
+            raise Exception("Buffer is empty")
+
+        try:
+            filename = self.queue[0]
+            path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
+            
+            st = os.stat(path)
+            file_size = st[6]
+            os.remove(path)
+            self.queue.pop(0)
+            file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
+            self.used_space = max(0, self.used_space - file_used_space)
+            Logging.log_info("Removed file '{}' of {} bytes (real size: {}) from buffer".format(filename, file_size, file_used_space))
+        except Exception as e:
+            Logging.log_error("Error removing file {}: {}".format(filename, e))
+            raise Exception("SD Buffer dequeue error")
+
+    
+    # -----------------------
+    # Estrapola il primo file della coda
+    # -----------------------
+    def get_first_file(self):
+        if len(self.queue) == 0:
+            raise Exception("Buffer is empty")
 
         try:
             filename = self.queue[0]
@@ -156,42 +168,18 @@ class SDBuffer(Loggable):
             with open(path, "rb") as f:
                 file_data = f.read()
             
-            st = os.stat(path)
-            file_size = st[6]
-            os.remove(path)
-            self.queue.pop(0)
-            file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
-            self.used_space = max(0, self.used_space - file_used_space)
-            self.log_info("Removed file '{}' of {} bytes (real size: {}) from buffer".format(filename, file_size, file_used_space))
             return file_data
         except Exception as e:
-            self.log_error("Error removing file {}: {}".format(filename, e))
-
-        return None
+            raise Exception("Error retrieving file {}: {}".format(filename, e))
         
     def clear_buffer(self):
 
-        self.log_info("Available total space in the SD before clearing: {} bytes".format(self._get_total_free_space()))
+        Logging.log_info("Available total space in the SD before clearing: {} bytes".format(self._get_total_free_space()))
 
         while len(self.queue) > 0:
-            try:
-                filename = self.queue[0]
-                path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
+            self.dequeue()
 
-                st = os.stat(path)
-                os.remove(path)
-
-                self.queue.pop(0)
-                file_size = st[6]
-                file_used_space = math.ceil(file_size / self.cluster_size) * self.cluster_size
-                self.used_space = max(0, self.used_space - file_used_space)
-
-                self.log_info("Removed file '{}' of {} bytes (real size: {}) while clearing the buffer".format(filename, file_size, file_used_space))
-            except Exception as e:
-                self.log_error("Error removing file {}: {}".format(filename, e))
-                raise Exception("SD Buffer clear error")
-
-        self.log_info("Available total space in the SD after clearing: {} bytes".format(self._get_total_free_space()))
+        Logging.log_info("Available total space in the SD after clearing: {} bytes".format(self._get_total_free_space()))
 
 
     # -----------------------

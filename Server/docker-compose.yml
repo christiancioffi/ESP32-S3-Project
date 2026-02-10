@@ -1,0 +1,15 @@
+services:
+  rest-server:
+    build: .
+    image: rest-server
+    container_name: rest-server
+    working_dir: /app
+    ports:
+      - "8443:8443"
+    environment:
+      - API_KEY=${API_KEY}
+      - ADMIN_KEY=${ADMIN_KEY}
+    volumes:
+      - ./AudioSamples:/app/AudioSamples
+      - ./logs:/app/logs
+      - ./NodesConfiguration:/app/NodesConfiguration
