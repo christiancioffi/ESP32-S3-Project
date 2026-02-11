@@ -1,0 +1,10 @@
+USE TesiDB;
+CREATE TABLE IF NOT EXISTS AudioChunks (
+    ID INT AUTO_INCREMENT PRIMARY KEY,
+    filename VARCHAR(100) NOT NULL,
+    timestamp DATETIME NOT NULL,
+    battery_level INT NOT NULL,
+    node_id VARCHAR(100) NOT NULL,
+    rms FLOAT NOT NULL
+);
+

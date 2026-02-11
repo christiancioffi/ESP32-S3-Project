@@ -5,9 +5,6 @@ from Logging import Logging
 
 class ATCommandsParser():
 
-    #IMP: usare operatori NON-greedy nelle regex (per evitare di esaurire lo stack di esecuzione delle regex). Gli operaotri NON-greedy fanno in modo
-    # di ottenere un match più piccolo possibile (ad esempio quando c'è '.+?' fa in modo di considerare la sottostringa più piccola possibile
-    # al fine di ottenere il match.
 
     _ip_pattern=f"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d){"(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))"*3}"
     _simple_ip_pattern=f"\d(\d)?(\d)?{"\.\d(\d)?(\d)?"*3}"

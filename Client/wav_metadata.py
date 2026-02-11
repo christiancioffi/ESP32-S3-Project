@@ -1,5 +1,5 @@
 class WAVMetadata:
-    def __init__(self, tmst: int, noId: str, blvl: float, rmsv: float):
+    def __init__(self, tmst: str, noId: str, blvl: int, rmsv: float):
         self.tmst = tmst
         self.noId = noId
         self.blvl = blvl

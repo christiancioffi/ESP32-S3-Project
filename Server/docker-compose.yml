@@ -3,13 +3,56 @@ services:
     build: .
     image: rest-server
     container_name: rest-server
+    restart: unless-stopped
     working_dir: /app
     ports:
       - "8443:8443"
     environment:
       - API_KEY=${API_KEY}
       - ADMIN_KEY=${ADMIN_KEY}
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./AudioSamples:/app/AudioSamples
       - ./logs:/app/logs
       - ./NodesConfiguration:/app/NodesConfiguration
+    depends_on:
+      db-server:
+        condition: service_healthy
+  db-server:
+    image: mysql:latest
+    container_name: db_server
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - ./db_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql # Script per creare la tabella
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s  # Controlla ogni 10 secondi
+      timeout: 5s    # Tempo massimo per il check
+      retries: 5     # Quante volte riprovare prima di darsi per vinto
+      start_period: 15s # Dà a MySQL 15 secondi per avviarsi prima di iniziare i controlli
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GRAFANA_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+    depends_on:
+      db-server:
+        condition: service_healthy
+
+volumes:
+  grafana_data:

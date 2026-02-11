@@ -236,7 +236,6 @@ class Eg91Sender():
         """
         if not self.ENABLED:
             Logging.log_info("Enabling EG91 sender module...")
-            #TODO: get data diagnostic, AT
 
             max_retries = 1
             for attempt in range(max_retries):
@@ -362,7 +361,7 @@ class Eg91Sender():
         """
         try:
             try:
-                resp = self._send_command_interrupt("AT+QLTS=2")  #=1 for GMT time, =2 for local time
+                resp = self._send_command_interrupt("AT+QLTS=1")  #=1 for GMT/UTC time, =2 for local time
             except Exception as e:
                 raise RuntimeError("QLTS command failed")
 

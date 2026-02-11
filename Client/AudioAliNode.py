@@ -29,11 +29,11 @@ class AudioAliNode():
     MAX_VOLTAGE_LEVEL = 4200   # mv
     DEFAULT_CONFIG_FILE = "default_alinode_conf.json"
     SD_PATH = "/sd"
-    FILES_THRESHOLD = 1     #TODO: cambiare a 14 (1 invio ogni 15 minuti, dato che ogni registrazione prende 1 minuto + 5 secondi di registrazione audio)
+    FILES_THRESHOLD = 5     # 1 invio ogni 15 minuti circa (3 minuti circa per chunk)
     MAX_SDBUFFER_SIZE = 13958643712 #13GB
     LOGS_PATH="/logs"
-    MAX_LOG_BUFFER_SIZE = 1258291   #1.2MB
-    MAX_NUMBER_OF_LOG_FILES = 30
+    MAX_LOG_BUFFER_SIZE = 1258291 #1.2MB (circa)
+    MAX_NUMBER_OF_LOG_FILES = 6
     BUFFER_LENGTH_IN_BYTES = 40000
     RECORD_TIME_IN_SECONDS = 5
     WAV_SAMPLE_SIZE_IN_BITS = 32
@@ -143,9 +143,9 @@ class AudioAliNode():
             #self.get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
-            #self._initialize_LTE_module()
-            #self._deinitialize_LTE_module()
-            #TODO
+            self._initialize_LTE_module()
+            self._deinitialize_LTE_module()
+            
 
             self._last_clock_synchronization_time=time.time()
             self._last_logs_upload_time=time.time()
@@ -203,7 +203,7 @@ class AudioAliNode():
         return True
 
     def _get_chunk_metadata(self, chunk):
-        timestamp=time.time()
+        timestamp=self._get_current_time()
         nodeID=self.CONFIG["NODEID"]
         batteryLevel=self._get_battery_level()
         rmsv=self.i2s_driver.calculate_RMS(chunk)
@@ -255,7 +255,6 @@ class AudioAliNode():
                 hour   = int(m.group(4))
                 minute = int(m.group(5))
                 second = int(m.group(6))
-                #zz     = int(m.group(7))
 
                 rtc = RTC()
                 rtc.datetime((
@@ -263,6 +262,37 @@ class AudioAliNode():
                     hour, minute, second,
                     0                     # subseconds
                 ))
+
+                '''
+                zz     = int(m.group(7))
+
+                offset_seconds_to_utc = zz * 15 * 60
+
+                epoch_local = time.mktime((
+                    year,
+                    month,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    0,   # weekday (ignorato)
+                    0    # yearday (ignorato)
+                ))
+
+                epoch_utc = epoch_local - offset_seconds_to_utc
+
+                tm = time.localtime(epoch_utc)
+                
+
+                rtc = RTC()
+
+                rtc.datetime((
+                    tm[0], tm[1], tm[2], 0,  # weekday = 0, lo puoi calcolare se vuoi
+                    tm[3], tm[4], tm[5],
+                    0                     # subseconds
+                ))
+
+                '''
 
                 self._last_clock_synchronization_time=time.time()
                 Logging.log_info(f"Local clock synchronized: {self._get_current_time()}")
@@ -274,14 +304,13 @@ class AudioAliNode():
     
     def _get_current_time(self):
         tm=time.localtime(time.time())
-        current_time = "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        current_time = "{:04d}/{:02d}/{:02d},{:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
         return current_time
     
     def _is_clock_synchronized(self):
         current_time = time.time()
         current_year = time.localtime(current_time)[0]
-        return (((current_time-self._last_clock_synchronization_time) < self.CONFIG["TIME_OUT_OF_SYNC"]) and (current_year>self.CONFIG["MIN_YEAR_FOR_SYNC_CHECK"]))
-    
+        return (((current_time-self._last_clock_synchronization_time) <= self.CONFIG["TIME_OUT_OF_SYNC"]) and (current_year>self.CONFIG["MIN_YEAR_FOR_SYNC_CHECK"]))
     
     def _send_logs_to_server(self):
         if (time.time()-self._last_logs_upload_time) >= self.CONFIG["LOG_UPLOAD_PERIOD"]:
@@ -303,16 +332,24 @@ class AudioAliNode():
                 Logging.log_info("Configuration updated: {}".format(self.CONFIG))
             else:
                 raise Exception("An error occurred while downloading the configuration from the server")
-
+    
+    # Funzione principale 
     def start(self):
         Logging.log_info(f"Starting main loop at time: {self._get_current_time()}")
         while True:
+            # Controllo che il clock sia sufficientemente sincronizzato, altrimenti lo sincronizzo prima di fare qualsiasi altra operazione
             if self._is_clock_synchronized():
                 try:
+                    # Catturo un chunk audio di 5s
                     chunk=self._get_audio_chunk()
+                    # Salvo il chunk catturato sulla SD
                     self.sd_buffer.enqueue(chunk)
+                    # Controllo se il buffer sia sufficienemente pieno (numero di file pari ad almeno FILES_THRESHOLD) 
+                    # e se la batteria sia sufficientemente carica per inviare i dati al server
                     if self.sd_buffer.is_buffer_full_enough() and self._is_battery_sufficient():
                         Logging.log_info("Buffer full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
+                        # Accendo e inizializzo il modulo LTE, che rimarrà acceso per tutta la durata 
+                        # dell'invio di tutti i chunk presenti nel buffer
                         self._initialize_LTE_module()
                         if self.lte_sender:
                             Logging.log_info("Network connection established and battery sufficient, sending data...")
@@ -320,14 +357,22 @@ class AudioAliNode():
                             for i in range(buffer_len):
                                 Logging.log_info("Sending chunk {}/{}...".format(i+1, buffer_len))
                                 try:
+                                    # Considero il primo chunk del buffer (il più vecchio)
                                     chunk=self.sd_buffer.get_first_file()
+                                    # Invio il chunk al server
                                     self._send_chunk_to_server(chunk)
+                                    # Elimino il chunk inviato dal buffer (e quindi dalla SD)
                                     self.sd_buffer.dequeue()
                                 except Exception as e:
                                     Logging.log_error("Error sending chunk {}/{}: {}".format(i+1, buffer_len, e))
+                                    # Interrompo l'invio degli eventuali chunk rimanenti nel buffer quando si è verificato un errore (es. perdita di connessione) , 
+                                    # per evitare di consumare la batteria dato che con alta probabilità il medesimo errore si ripeterà con i chunk successivi
                                     break               # continue se invece vuoi continuare ad inviare il resto
+                            # Invio i log al server (se sono passati pià di 24 ore dall'ultimo invio)
                             self._send_logs_to_server()
+                            # Aggiorno la configurazione scaricandola dal server (se sono passati più di 24 ore dall'ultimo aggiornamento)
                             self._update_configuration()
+                            # Deinizializzo e spengo il modulo LTE, per risparmiare batteria
                             self._deinitialize_LTE_module()
                     else:
                         Logging.log_info("Buffer NOT full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
@@ -335,14 +380,16 @@ class AudioAliNode():
                     Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
             else:
                 Logging.log_info("Clock NOT synchronized, trying to synchronize it...")
+                # L'accensione e inizializzazione del modulo LTE sincronizza in automatico il clock
                 self._initialize_LTE_module()
                 self._deinitialize_LTE_module()
 
+            # Attendo un certo tempo prima iniziare nuovamente un ciclo di cattura e invio dati
             Logging.log_info("Sleeping...")
             time.sleep(self.CONFIG["IDLE_TIME"])
             Logging.log_info("Awake!")
 
-
+    #TODO: rimuovere
     def test_start(self):
         Logging.log_info(f"Starting test at time: {self._get_current_time()}")
         try:
@@ -350,10 +397,9 @@ class AudioAliNode():
             if self.lte_sender:
                 chunk=self._get_audio_chunk()
                 self._send_chunk_to_server(chunk)
-                self._send_logs_to_server()
-                self._update_configuration()
-                #response = self.lte_sender.https_get_request(url=self.CONFIG["CONFIGURATION_ENDPOINT"])
-                #response = self.lte_sender.https_post_request(url=self.CONFIG["CONFIGURATION_ENDPOINT"],body="test", content_type="text/plain", headers={"X-ADMIN-KEY":"testkey"})
+                #self._send_logs_to_server()
+                #self._update_configuration()
+                self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
 
@@ -369,16 +415,7 @@ if __name__ == "__main__":
         sys.print_exception(e)
     finally:
         if alinode:
+            # Se l'oggetto alinode è stato configurato, lo deinizializzo per spegnerlo nella maniera più sicura possibile
             Logging.untraced_log_info("Stopping AliNode...")
             alinode.deinit()
             Logging.untraced_log_info("AliNode stopped.")
-
-'''
-reg_str="GET /[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]* HTTP/1\.1\r\n([A-Za-z0-9!#$%&'*+.^_`|~-]+:[ \t]*[^\r\n]+?\r\n)+?\r\n"
-reg_str="^"+reg_str+"$"
-regex=re.compile(reg_str)
-test_str=b'GET /fc8f5f25-942b-4ce1-bc6f-6ed9c027fb69 HTTP/1.1\r\nHost: webhook.site\r\nUser-Agent: QUECTEL_MODULE\r\nAccept: */*\r\nContent-Length: 0\r\nX-API-KEY: testkey\r\n\r\n'.decode()
-match=regex.match(test_str)
-if match:
-    print(match.group(0))
-'''
