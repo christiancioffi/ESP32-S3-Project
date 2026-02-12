@@ -139,7 +139,7 @@ class AudioAliNode():
             self.soc_driver = soc
             #soc.data_memory_test()
             #soc.start()
-            #soc.write_qmax_cell_0()    #TODO rimuovere
+            soc.write_qmax_cell_0()    #Commentare per test
             #self.get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
@@ -186,21 +186,17 @@ class AudioAliNode():
             except (KeyboardInterrupt,Exception) as e:
                 Logging.log_error("Failed to deinitialize LTE module: \"{}\"".format(e))
 
-    def _get_battery_level(self):   #TODO
-        '''
+    def _get_battery_level(self):   #Commentare per test
         data = self.soc_driver.get_data()
         battery_voltage_level=data[3]["v"]
         Logging.log_info("Battery voltage level: {} mV".format(battery_voltage_level))
         return battery_voltage_level
-        '''
-        return self.MAX_VOLTAGE_LEVEL
+        #return self.MAX_VOLTAGE_LEVEL
 
-    def _is_battery_sufficient(self):   #TODO
-        '''
+    def _is_battery_sufficient(self):   #Commentare per test
         bvlv=self._get_battery_level()
         return bvlv >= self.MIN_VOLTAGE_LEVEL
-        '''
-        return True
+        #return True
 
     def _get_chunk_metadata(self, chunk):
         timestamp=self._get_current_time()
@@ -389,7 +385,7 @@ class AudioAliNode():
             time.sleep(self.CONFIG["IDLE_TIME"])
             Logging.log_info("Awake!")
 
-    #TODO: rimuovere
+    #Da usare solo per test
     def test_start(self):
         Logging.log_info(f"Starting test at time: {self._get_current_time()}")
         try:
@@ -397,8 +393,8 @@ class AudioAliNode():
             if self.lte_sender:
                 chunk=self._get_audio_chunk()
                 self._send_chunk_to_server(chunk)
-                #self._send_logs_to_server()
-                #self._update_configuration()
+                self._send_logs_to_server()
+                self._update_configuration()
                 self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
