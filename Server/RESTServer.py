@@ -21,6 +21,8 @@ db_config = {
     'port': 3306
 }
 
+
+SERVER_PORT=8443
 BASE_DIR = "."
 LOGS_DIR = "logs"
 SAMPLES_DIR = "AudioSamples"
@@ -30,15 +32,7 @@ API_KEY=os.environ.get('API_KEY')
 ADMIN_KEY=os.environ.get('ADMIN_KEY')
 config_lock = Lock()
 METADATA_KEYS = ["tmst", "noId", "blvl", "rmsv"]
-
-def get_db_connection():
-    try:
-        conn = mysql.connector.connect(**db_config)
-        return conn
-    except mysql.connector.Error as err:
-        print(f"Connection error: {err}")
-        return None
-    
+DATE_FORMAT="%Y/%m/%d,%H:%M:%S"
 TARGET_DOMAIN = "tesi.aliagrid.com"
 REDIRECT_TARGET = f"https://{TARGET_DOMAIN}"
 
@@ -84,6 +78,14 @@ def admin_key_required(f):
             return jsonify({"error": "Missing (or invalid) ADMIN KEY"}), 401
             
     return decorated_function
+
+def get_db_connection():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        return conn
+    except mysql.connector.Error as err:
+        print(f"Connection error: {err}")
+        return None
 
 def is_valid_wav_bytes(data):
     return (
@@ -154,9 +156,9 @@ def audio():
         print("Received WAV metadata:", metadata)
 
         try:
-            audio_tmst=datetime.strptime(metadata['tmst'], "%Y/%m/%d,%H:%M:%S")
+            audio_tmst=datetime.strptime(metadata['tmst'], DATE_FORMAT)
         except Exception as e:
-            raise Exception(f"Invalid timestamp format in metadata: {metadata.get('tmst', 'N/A')}. Expected format: YYYY/MM/DD,HH:MM:SS")
+            raise Exception(f"Invalid timestamp format in metadata: {metadata.get('tmst', 'N/A')}. Expected format: {DATE_FORMAT}")
     except Exception as e:
         return jsonify({
             "status": "error",
@@ -182,41 +184,8 @@ def audio():
             with open(filepath, "wb") as f:
                 f.write(wav_bytes)
 
-            db=None
-            cursor=None
-            
-            db = get_db_connection()
-            if not db:
-                raise Exception("Database connection failed")
+            insert_chunk_into_db(filename, metadata['tmst'], metadata['blvl'], metadata['noId'], metadata['rmsv'])
 
-            cursor = db.cursor()
-        
-            sql = """
-                INSERT INTO AudioChunks (filename, timestamp, battery_level, node_id, rms)
-                VALUES (%s, %s, %s, %s, %s)
-                """
-        
-            values = (
-                filename,           # Filename
-                audio_tmst,   # Timestamp
-                metadata['blvl'],   # Battery level
-                metadata['noId'],   # Node ID
-                metadata['rmsv']    # RMS value
-            )
-
-            try:
-                cursor.execute(sql, values)
-                db.commit()
-                print(f"Insert executed successfully")
-            except mysql.connector.Error as err:
-                print(f"Error during insert: {err}")
-                db.rollback()
-                raise Exception(f"Database insert error: {err}")
-            finally:
-                if cursor:
-                    cursor.close()
-                if db:
-                    db.close()
         except Exception as e:
             if os.path.exists(filepath):
                 os.remove(filepath)  # Rimuove il file se c'è un errore nel DB
@@ -249,6 +218,8 @@ def save_logs():
         with open(os.path.join(logs_dir, filename), "w", encoding="utf-8") as f:
                 f.write(data)
 
+        insert_event_into_db("log_received")
+
         return jsonify({
                 "status": "Logs saved successfully",
         })
@@ -273,6 +244,8 @@ def get_configuration():
 
             with open(conf_path, "r", encoding="utf-8") as f:
                 config_data =  json.load(f)
+        
+        insert_event_into_db("configuration_requested")
 
         return jsonify(config_data)
         
@@ -313,7 +286,79 @@ def update_configuration():
             "message": str(e)
         }), 500
 
+def insert_chunk_into_db(filename: str, timestamp: datetime, battery_level: int, node_id: str, rms: float):
+    db=None
+    cursor=None
+    
+    db = get_db_connection()
+    if not db:
+        raise Exception("Database connection failed")
+
+    cursor = db.cursor()
+
+    sql = """
+        INSERT INTO AudioChunks (filename, timestamp, battery_level, node_id, rms)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+
+    values = (
+        filename,           # Filename
+        timestamp,   # Timestamp
+        battery_level,   # Battery level
+        node_id,   # Node ID
+        rms    # RMS value
+    )
+
+    try:
+        cursor.execute(sql, values)
+        db.commit()
+        print(f"Insert executed successfully")
+    except mysql.connector.Error as err:
+        print(f"Error during insert: {err}")
+        db.rollback()
+        raise Exception(f"Database insert error: {err}")
+    finally:
+        if cursor:
+            cursor.close()
+        if db:
+            db.close()
+
+def insert_event_into_db(event_type):
+    db=None
+    cursor=None
+    
+    db = get_db_connection()
+    if not db:
+        print("Database connection failed")
+        return
+
+    cursor = db.cursor()
+    if not cursor:
+        db.close()
+        print("Database cursor creation failed")
+        return
+
+    sql = """
+        INSERT INTO Events (event_type, timestamp)
+        VALUES (%s, %s)
+        """
+
+    current_time = datetime.now().strftime(DATE_FORMAT)
+
+    try:
+        cursor.execute(sql, (event_type, current_time))
+        db.commit()
+        print(f"Insert executed successfully")
+    except mysql.connector.Error as err:
+        print(f"Error during insert: {err}")
+        db.rollback()
+        #raise Exception(f"Database insert error: {err}")
+    finally:
+        if cursor:
+            cursor.close()
+        if db:
+            db.close()
 
 if __name__ == '__main__':
     os.makedirs(LOGS_DIR, exist_ok=True)
-    app.run(host='0.0.0.0', port=8443, debug=True)
+    app.run(host='0.0.0.0', port=SERVER_PORT, debug=True)
