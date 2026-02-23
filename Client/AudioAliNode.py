@@ -135,11 +135,10 @@ class AudioAliNode():
 
             Logging.log_info(f"I2C scan: {i2c.scan()}")
             
-            soc = SocDriver(adapter, config)
-            self.soc_driver = soc
-            #soc.data_memory_test()
-            #soc.start()
-            soc.write_qmax_cell_0()    #Commentare per test
+            self.soc_driver = SocDriver(adapter, config)
+            #self.soc_driver.data_memory_test()
+            #self.soc_driver.start()
+            self.soc_driver.write_qmax_cell_0()    #Commentare per test
             #self.get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
