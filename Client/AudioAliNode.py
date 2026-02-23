@@ -139,7 +139,7 @@ class AudioAliNode():
             #self.soc_driver.data_memory_test()
             #self.soc_driver.start()
             self.soc_driver.write_qmax_cell_0()    #Commentare per test
-            #self.get_battery_level()
+            #self._get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
             self._initialize_LTE_module()
