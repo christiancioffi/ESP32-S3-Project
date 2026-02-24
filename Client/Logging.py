@@ -1,4 +1,5 @@
 import os
+import time
 
 class Logging():
 
@@ -59,21 +60,27 @@ class Logging():
     @classmethod
     @require_initialization
     def log_info(cls, message: str):
-        log_message = f"[INFO] {message}"
+        tm=time.localtime(time.time())
+        current_time = "{:04d}/{:02d}/{:02d},{:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        log_message = f"[INFO][{current_time}] {message}"
         print(f"{cls._INFO_COLOR}{log_message}{cls.RESET}")
         cls._add_to_buffer(log_message)
     
     @classmethod
     @require_initialization
     def log_error(cls, message: str):
-        log_message = f"[ERROR] {message}"
+        tm=time.localtime(time.time())
+        current_time = "{:04d}/{:02d}/{:02d},{:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        log_message = f"[ERROR][{current_time}] {message}"
         print(f"{cls._ERROR_COLOR}{log_message}{cls.RESET}")
         cls._add_to_buffer(log_message)
     
     @classmethod
     @require_initialization
     def log_debug(cls, message: str):
-        log_message = f"[DEBUG] {message}"
+        tm=time.localtime(time.time())
+        current_time = "{:04d}/{:02d}/{:02d},{:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        log_message = f"[DEBUG][{current_time}] {message}"
         print(f"{cls._DEBUG_COLOR}{log_message}{cls.RESET}")
         cls._add_to_buffer(log_message)
     
