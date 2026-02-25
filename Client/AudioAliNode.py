@@ -138,7 +138,7 @@ class AudioAliNode():
             self.soc_driver = SocDriver(adapter, config)
             #self.soc_driver.data_memory_test()
             #self.soc_driver.start()
-            self.soc_driver.write_qmax_cell_0()    #Commentare per test
+            #self.soc_driver.write_qmax_cell_0()    #Commentare per test
             #self._get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
@@ -186,16 +186,16 @@ class AudioAliNode():
                 Logging.log_error("Failed to deinitialize LTE module: \"{}\"".format(e))
 
     def _get_battery_level(self):   #Commentare per test
-        data = self.soc_driver.get_data()
-        battery_voltage_level=data[3]["v"]
-        Logging.log_info("Battery voltage level: {} mV".format(battery_voltage_level))
-        return battery_voltage_level
-        #return self.MAX_VOLTAGE_LEVEL
+        #data = self.soc_driver.get_data()
+        #battery_voltage_level=data[3]["v"]
+        #Logging.log_info("Battery voltage level: {} mV".format(battery_voltage_level))
+        #return battery_voltage_level
+        return self.MAX_VOLTAGE_LEVEL
 
     def _is_battery_sufficient(self):   #Commentare per test
-        bvlv=self._get_battery_level()
-        return bvlv >= self.MIN_VOLTAGE_LEVEL
-        #return True
+        #bvlv=self._get_battery_level()
+        #return bvlv >= self.MIN_VOLTAGE_LEVEL
+        return True
 
     def _get_chunk_metadata(self, chunk):
         timestamp=self._get_current_time()
@@ -391,9 +391,10 @@ class AudioAliNode():
             self._initialize_LTE_module()
             if self.lte_sender:
                 chunk=self._get_audio_chunk()
-                self._send_chunk_to_server(chunk)
-                self._send_logs_to_server()
-                self._update_configuration()
+                self.sd_buffer.enqueue(chunk)
+                #self._send_chunk_to_server(chunk)
+                #self._send_logs_to_server()
+                #self._update_configuration()
                 self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
@@ -404,8 +405,8 @@ if __name__ == "__main__":
     try:
         alinode=AudioAliNode()
         #alinode.sd_buffer.clear_buffer()
-        alinode.start()
-        #alinode.test_start()
+        #alinode.start()
+        alinode.test_start()
     except (KeyboardInterrupt, Exception) as e:
         sys.print_exception(e)
     finally:

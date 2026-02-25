@@ -114,7 +114,7 @@ class SDBuffer():
         try:
             self._free_space(file_used_space)
 
-            filename = self.prefix + str(int(time.time() * 1000)) + self.suffix
+            filename = self.prefix + str(time.time()) + self.suffix
             path = self.SD_PATH + "/" + self.FILES_DIR + "/" + filename
 
             with open(path, "wb") as f:
