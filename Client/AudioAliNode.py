@@ -138,7 +138,7 @@ class AudioAliNode():
             self.soc_driver = SocDriver(adapter, config)
             #self.soc_driver.data_memory_test()
             #self.soc_driver.start()
-            #self.soc_driver.write_qmax_cell_0()    #Commentare per test
+            self.soc_driver.write_qmax_cell_0()    #Commentare per test
             #self._get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
@@ -186,16 +186,16 @@ class AudioAliNode():
                 Logging.log_error("Failed to deinitialize LTE module: \"{}\"".format(e))
 
     def _get_battery_level(self):   #Commentare per test
-        #data = self.soc_driver.get_data()
-        #battery_voltage_level=data[3]["v"]
-        #Logging.log_info("Battery voltage level: {} mV".format(battery_voltage_level))
-        #return battery_voltage_level
-        return self.MAX_VOLTAGE_LEVEL
+        data = self.soc_driver.get_data()
+        battery_voltage_level=data[3]["v"]
+        Logging.log_info("Battery voltage level: {} mV".format(battery_voltage_level))
+        return battery_voltage_level
+        #return self.MAX_VOLTAGE_LEVEL
 
     def _is_battery_sufficient(self):   #Commentare per test
-        #bvlv=self._get_battery_level()
-        #return bvlv >= self.MIN_VOLTAGE_LEVEL
-        return True
+        bvlv=self._get_battery_level()
+        return bvlv >= self.MIN_VOLTAGE_LEVEL
+        #return True
 
     def _get_chunk_metadata(self, chunk):
         timestamp=self._get_current_time()
@@ -344,7 +344,7 @@ class AudioAliNode():
                     if self.sd_buffer.is_buffer_full_enough() and self._is_battery_sufficient():
                         Logging.log_info("Buffer full enough to send data (files: {})".format(self.sd_buffer.get_number_of_files()))
                         # Accendo e inizializzo il modulo LTE, che rimarrà acceso per tutta la durata 
-                        # dell'invio di tutti i chunk presenti nel buffer
+                        # dell'invio di tutti i chunk presenti nel buffer (2 minuti a invio del singolo chunk)
                         self._initialize_LTE_module()
                         if self.lte_sender:
                             Logging.log_info("Network connection established and battery sufficient, sending data...")
@@ -363,9 +363,9 @@ class AudioAliNode():
                                     # Interrompo l'invio degli eventuali chunk rimanenti nel buffer quando si è verificato un errore (es. perdita di connessione) , 
                                     # per evitare di consumare la batteria dato che con alta probabilità il medesimo errore si ripeterà con i chunk successivi
                                     break               # continue se invece vuoi continuare ad inviare il resto
-                            # Invio i log al server (se sono passati pià di 24 ore dall'ultimo invio)
+                            # Invio i log al server (se sono passati pià di LOG_UPLOAD_PERIOD secondi dall'ultimo invio)
                             self._send_logs_to_server()
-                            # Aggiorno la configurazione scaricandola dal server (se sono passati più di 24 ore dall'ultimo aggiornamento)
+                            # Aggiorno la configurazione scaricandola dal server (se sono passati più di CONFIGURATION_DOWNLOAD_PERIOD dall'ultimo aggiornamento)
                             self._update_configuration()
                             # Deinizializzo e spengo il modulo LTE, per risparmiare batteria
                             self._deinitialize_LTE_module()
@@ -392,9 +392,9 @@ class AudioAliNode():
             if self.lte_sender:
                 chunk=self._get_audio_chunk()
                 self.sd_buffer.enqueue(chunk)
-                #self._send_chunk_to_server(chunk)
-                #self._send_logs_to_server()
-                #self._update_configuration()
+                self._send_chunk_to_server(chunk)
+                self._send_logs_to_server()
+                self._update_configuration()
                 self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
@@ -405,8 +405,8 @@ if __name__ == "__main__":
     try:
         alinode=AudioAliNode()
         #alinode.sd_buffer.clear_buffer()
-        #alinode.start()
-        alinode.test_start()
+        alinode.start()
+        #alinode.test_start()
     except (KeyboardInterrupt, Exception) as e:
         sys.print_exception(e)
     finally:
