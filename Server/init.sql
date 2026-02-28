@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS AudioChunks (
     rms FLOAT NOT NULL
 );
 
+CREATE INDEX idx_timestamp ON AudioChunks (timestamp);
+
 CREATE TABLE IF NOT EXISTS Events (
     ID INT AUTO_INCREMENT PRIMARY KEY,
     event_type VARCHAR(100) NOT NULL,
