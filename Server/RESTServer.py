@@ -204,6 +204,77 @@ def audio():
             "message": str(e)
         }), 500
 
+@app.route('/test_audio', methods=['POST'])
+@api_key_required
+def test_audio():
+
+    # Legge i byte grezzi del body HTTP
+    wav_bytes = request.get_data()
+    audio_tmst=""
+    
+    
+    try:
+
+        if not wav_bytes:
+            raise Exception("Empty request body")
+
+        # Controlla magic bytes WAV
+        if not is_valid_wav_bytes(wav_bytes):
+            raise Exception("Chunk is not a valid WAV file")
+
+         # Estrae metadati dal WAV (dai byte)
+        metadata = getMetadata(wav_bytes)
+        print("Received WAV metadata:", metadata)
+
+        try:
+            audio_tmst=datetime.strptime(metadata['tmst'], DATE_FORMAT)
+        except Exception as e:
+            raise Exception(f"Invalid timestamp format in metadata: {metadata.get('tmst', 'N/A')}. Expected format: {DATE_FORMAT}")
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 400
+        
+        
+    try:
+
+        # Salva il file WAV nella cartella AudioSamples
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "./Test"))
+        samples_dir = os.path.join(base_dir, "AudioSamplesTest")
+        os.makedirs(samples_dir, exist_ok=True)
+
+        # Salvataggio file
+        hash_obj = hashlib.sha256(wav_bytes)
+        hash_hex = hash_obj.hexdigest()
+        filename = f"audio_{hash_hex}.wav"
+        filepath = os.path.join(samples_dir, filename)
+        
+        try:
+
+            with open(filepath, "wb") as f:
+                f.write(wav_bytes)
+
+            #insert_chunk_into_db(filename, metadata['tmst'], metadata['blvl'], metadata['noId'], metadata['rmsv'])
+
+        except Exception as e:
+            if os.path.exists(filepath):
+                os.remove(filepath)  # Rimuove il file se c'è un errore nel DB
+                print(f"Removed file {filename} due to error")
+            raise e
+        
+
+        return jsonify({
+            "status": "Chunk received successfully",
+        })
+
+    except Exception as e:
+        print(f"caught exception {type(e).__name__} {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
 @app.route('/logs', methods=['POST'])
 @api_key_required
 def save_logs():

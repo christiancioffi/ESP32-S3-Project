@@ -362,7 +362,7 @@ class AudioAliNode():
                                     Logging.log_error("Error sending chunk {}/{}: {}".format(i+1, buffer_len, e))
                                     # Interrompo l'invio degli eventuali chunk rimanenti nel buffer quando si è verificato un errore (es. perdita di connessione) , 
                                     # per evitare di consumare la batteria dato che con alta probabilità il medesimo errore si ripeterà con i chunk successivi
-                                    break               # continue se invece vuoi continuare ad inviare il resto
+                                    continue               # continue se vuoi continuare ad inviare il resto, break se vuoi interrompere l'invio sequenziale di tutti i chunk
                             # Invio i log al server (se sono passati pià di LOG_UPLOAD_PERIOD secondi dall'ultimo invio)
                             self._send_logs_to_server()
                             # Aggiorno la configurazione scaricandola dal server (se sono passati più di CONFIGURATION_DOWNLOAD_PERIOD dall'ultimo aggiornamento)
@@ -393,8 +393,9 @@ class AudioAliNode():
                 chunk=self._get_audio_chunk()
                 self.sd_buffer.enqueue(chunk)
                 self._send_chunk_to_server(chunk)
-                self._send_logs_to_server()
-                self._update_configuration()
+                self.sd_buffer.dequeue()
+                #self._send_logs_to_server()
+                #self._update_configuration()
                 self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
