@@ -362,7 +362,7 @@ class AudioAliNode():
                                     Logging.log_error("Error sending chunk {}/{}: {}".format(i+1, buffer_len, e))
                                     # Interrompo l'invio degli eventuali chunk rimanenti nel buffer quando si è verificato un errore (es. perdita di connessione) , 
                                     # per evitare di consumare la batteria dato che con alta probabilità il medesimo errore si ripeterà con i chunk successivi
-                                    continue               # continue se vuoi continuare ad inviare il resto, break se vuoi interrompere l'invio sequenziale di tutti i chunk
+                                    break               # continue se vuoi continuare ad inviare il resto, break se vuoi interrompere l'invio sequenziale di tutti i chunk
                             # Invio i log al server (se sono passati pià di LOG_UPLOAD_PERIOD secondi dall'ultimo invio)
                             self._send_logs_to_server()
                             # Aggiorno la configurazione scaricandola dal server (se sono passati più di CONFIGURATION_DOWNLOAD_PERIOD dall'ultimo aggiornamento)
