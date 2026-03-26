@@ -388,15 +388,15 @@ class AudioAliNode():
     def test_start(self):
         Logging.log_info(f"Starting test at time: {self._get_current_time()}")
         try:
-            self._initialize_LTE_module()
-            if self.lte_sender:
+            #self._initialize_LTE_module()
+            #if self.lte_sender:
                 chunk=self._get_audio_chunk()
                 self.sd_buffer.enqueue(chunk)
-                self._send_chunk_to_server(chunk)
-                self.sd_buffer.dequeue()
+                #self._send_chunk_to_server(chunk)
+                #self.sd_buffer.dequeue()
                 #self._send_logs_to_server()
                 #self._update_configuration()
-                self._deinitialize_LTE_module()
+                #self._deinitialize_LTE_module()
         except Exception as e:
             Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
 
