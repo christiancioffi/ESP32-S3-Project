@@ -5,6 +5,7 @@ from uart_rx_manager import UARTRXManager
 from machine import UART, Pin
 import esp32
 import re
+from timeout_exception import TimeoutException
 
 class Eg91Sender():
 
@@ -21,7 +22,7 @@ class Eg91Sender():
 
         # HTTPS commands
         "AT+QHTTPCFG": 2000,
-        "AT+CFUN": 10000,
+        "AT+CFUN": 20000,
         "AT+QHTTPURL": 5000,
         "AT+QHTTPGET": 80000,
         "AT+QHTTPREAD": 10000,
@@ -46,6 +47,10 @@ class Eg91Sender():
         "image/jpeg": 5
     }
 
+    MAX_RETRIES = 2
+
+    URL_REGEX="https?://([a-zA-Z0-9-\.]+)(:[0-9]+)?(/[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]*)?"
+
     def __init__(self, uart_tx_pin, uart_rx_pin, lte_power_pin, lte_reset_pin):
         try:
             
@@ -55,8 +60,10 @@ class Eg91Sender():
             self.UART_RX_PIN = uart_rx_pin
             self.LTE_POWER_PIN = lte_power_pin
             self.LTE_RESET_PIN = lte_reset_pin
-            self.IDLE_TIME_POWER_CYCLE_STEP_1=1
-            self.IDLE_TIME_POWER_CYCLE_STEP_2=15
+            self.IDLE_TIME_POWER_CYCLE_STEP_1=1 #s
+            self.IDLE_TIME_POWER_CYCLE_STEP_2=15    #s
+            self.RESET_TIME_STEP_1=300 #ms
+            self.RESET_TIME_STEP_2=15000 #ms
             self.POWERED_ON=False
 
             self._network_registered = False
@@ -68,18 +75,10 @@ class Eg91Sender():
 
             self._uart_rx_manager=UARTRXManager(self._uart, self._max_buffer_size)
 
-            Logging.log_info("Powering on EG91 module...")
-
-            # Power cycle
-            Pin(self.LTE_POWER_PIN, Pin.OUT).on()
-            time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
-            Pin(self.LTE_POWER_PIN, Pin.OUT).off()
-            time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+            self._power_on()
 
             self.POWERED_ON=True
-            
-            Logging.log_info("EG91 module powered on")
-
+        
             config={}
             try:
                 with open("./" +"eg91_config.json", "r") as f:
@@ -128,12 +127,7 @@ class Eg91Sender():
             self._uart.deinit()
             self._uart_rx_manager.deinit()
             if self.POWERED_ON:
-                Logging.log_info("Shutting down EG91 module...")
-                Pin(self.LTE_POWER_PIN, Pin.OUT).on()
-                time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
-                Pin(self.LTE_POWER_PIN, Pin.OUT).off()
-                time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
-                Logging.log_info("EG91 module shut down successfully")
+                self._shut_down()
                 self.POWERED_ON=False
                 '''
                 try:
@@ -153,6 +147,41 @@ class Eg91Sender():
         except Exception as e:
             Logging.log_error(f"Error during EG91 deinitialization: \"{e}\"")
 
+    def _power_on(self):
+        # Power cycle
+        Logging.log_info("Powering on EG91 module...")
+        Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+        time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
+        Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+        time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+        Logging.log_info("EG91 module powered on successfully")
+    
+    def _shut_down(self):
+        Logging.log_info("Shutting down EG91 module...")
+        Pin(self.LTE_POWER_PIN, Pin.OUT).on()
+        time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_1)
+        Pin(self.LTE_POWER_PIN, Pin.OUT).off()
+        time.sleep(self.IDLE_TIME_POWER_CYCLE_STEP_2)
+        Logging.log_info("EG91 module shut down successfully")
+    
+    def _hard_reset(self):
+        Logging.log_info("Resetting EG91 module...")
+        Pin(self.LTE_RESET_PIN, Pin.OUT).on()
+        time.sleep_ms(self.RESET_TIME_STEP_1)
+        Pin(self.LTE_RESET_PIN, Pin.OUT).off()
+        time.sleep_ms(self.RESET_TIME_STEP_2)
+        Logging.log_info("EG91 module reset successfully")
+        self._init_uart_interrupt()
+
+    def _soft_reset(self):
+        try:
+            self._send_command("AT+CFUN=1,1")
+            self._init_uart_interrupt()
+            return True
+        except Exception as e:
+            Logging.log_error(f"Failed to perform soft reset: \"{e}\"")
+            return False
+
     def _init_uart_interrupt(self):
         """Initialize interrupt-based UART communication"""
 
@@ -167,7 +196,7 @@ class Eg91Sender():
         except Exception as e:
             Logging.untraced_log_error(f"UART IRQ handler error: \"{e}\"")
 
-    def _send_command_interrupt(self, command, wait_time=None) -> str:
+    def _send_command(self, command, wait_time=None) -> str:
         """
         Send AT command using interrupt-based communication with improved error handling
 
@@ -209,6 +238,9 @@ class Eg91Sender():
             Logging.log_debug(f"Received response: {response}")
 
             return response
+        except TimeoutException as te:
+            Logging.log_error(f"Timeout occurred while sending command '{command}'")
+            raise TimeoutException()
         except Exception as e:
             Logging.log_error(f"Error sending command '{command}': \"{e}\"")
             raise Exception(f"Error sending command '{command}'")
@@ -216,7 +248,7 @@ class Eg91Sender():
     def _check_network_registration(self) -> bool:
         """Check if device is registered to network"""
         try:
-            response = self._send_command_interrupt("AT+CREG?")
+            response = self._send_command("AT+CREG?")
             # Parse: +CREG: <n>,<stat>
             for line in response.split('\n'):
                 if '+CREG:' in line:
@@ -237,8 +269,7 @@ class Eg91Sender():
         if not self.ENABLED:
             Logging.log_info("Enabling EG91 sender module...")
 
-            max_retries = 1
-            for attempt in range(max_retries):
+            for attempt in range(self.MAX_RETRIES):
                 try:
 
                     # Clear rx buffer
@@ -248,10 +279,10 @@ class Eg91Sender():
                     Logging.log_debug("Starting basic configuration")
 
                     # Test basic communication
-                    response = self._send_command_interrupt(command="AT")
+                    response = self._send_command(command="AT")
 
                     # Disable echo
-                    response = self._send_command_interrupt(command="ATE0")
+                    response = self._send_command(command="ATE0")
 
                     '''
                     # Configure context
@@ -260,7 +291,7 @@ class Eg91Sender():
                     '''
 
                     # Check SIM status
-                    response = self._send_command_interrupt("AT+CPIN?")
+                    response = self._send_command("AT+CPIN?")
                     if "READY" not in response:
                         raise RuntimeError("SIM not ready")
 
@@ -279,19 +310,25 @@ class Eg91Sender():
 
                     self.ENABLED=True
 
-                    # Resetto contatore lora 
-
-                    try:
-                        nvs = esp32.NVS("storage")
-                        nvs.set_i32("lora_retry", 0)
-                        nvs.commit()
-                    except Exception as e:
-                        Logging.log_error(f"NVS write error for lora_retry in eg91: \"{e}\"")
                     return True
-                
+                except TimeoutException as te:
+                    if attempt < self.MAX_RETRIES - 1:
+                        Logging.log_error(f"Enable attempt {attempt + 1} failed: \"{te}\".")
+                        self._hard_reset()
+                        Logging.log_info("Retrying to enable EG91 sender module...")
+                    else:
+                        Logging.log_error(f"EG91 enabling failed: \"{te}\"")
+                        return False
                 except Exception as e:
-                    Logging.log_error(f"Enable attempt {attempt + 1} failed: \"{e}\"")
-                    return False
+                    if attempt < self.MAX_RETRIES - 1:
+                        Logging.log_error(f"Enable attempt {attempt + 1} failed: \"{e}\".")
+                        #if not self._soft_reset():
+                        #    self._hard_reset()
+                        self._hard_reset()
+                        Logging.log_info("Retrying to enable EG91 sender module...")
+                    else:
+                        Logging.log_error(f"EG91 enabling failed: \"{e}\"")
+                        return False
         return True
     
     def _activate_pdp_context(self) -> bool:
@@ -300,7 +337,7 @@ class Eg91Sender():
         try:
             # Configure APN
             apn_cmd = f'AT+QICSGP={self.PDP_CTXID},1,"{self._apn}","","",1'
-            response = self._send_command_interrupt(apn_cmd)
+            response = self._send_command(apn_cmd)
         except Exception as e:
             raise RuntimeError("APN configuration failed")
         
@@ -313,19 +350,19 @@ class Eg91Sender():
 
         try:
            # Verify activation
-            response = self._send_command_interrupt("AT+QIACT?")
+            response = self._send_command("AT+QIACT?")
         except Exception as e:
             raise RuntimeError("Context verification failed")
             
         try:
            # Activate context
-            response = self._send_command_interrupt(f"AT+QIACT={self.PDP_CTXID}")
+            response = self._send_command(f"AT+QIACT={self.PDP_CTXID}")
         except Exception as e:
             raise RuntimeError("Context activation failed")
 
         try:
            # Verify activation
-            response = self._send_command_interrupt("AT+QIACT?")
+            response = self._send_command("AT+QIACT?")
         except Exception as e:
             raise RuntimeError("Context verification failed")
 
@@ -333,7 +370,7 @@ class Eg91Sender():
 
         try:
            # Deactivate context
-            response = self._send_command_interrupt(f'AT+QIDEACT={self.PDP_CTXID}')
+            response = self._send_command(f'AT+QIDEACT={self.PDP_CTXID}')
         except Exception as e:
             raise RuntimeError("Context deactivation failed")                
 
@@ -361,7 +398,7 @@ class Eg91Sender():
         """
         try:
             try:
-                resp = self._send_command_interrupt("AT+QLTS=1")  #=1 for GMT/UTC time, =2 for local time
+                resp = self._send_command("AT+QLTS=2")  #=1 for GMT/UTC time, =2 for local time
             except Exception as e:
                 raise RuntimeError("QLTS command failed")
 
@@ -400,20 +437,20 @@ class Eg91Sender():
             
             try:
                 # Configure the PDP context ID
-                response = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
+                response = self._send_command(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
             except Exception as e:
                 raise Exception("Failed to configure HTTP context ID")
 
             if headers:
                 try:
                     # Allow to output HTTPS request header
-                    response = self._send_command_interrupt('AT+QHTTPCFG="requestheader",1')
+                    response = self._send_command('AT+QHTTPCFG="requestheader",1')
                 except Exception as e:
                     raise Exception("Failed to configure request header")
 
             try:
                 # Set ssl context id
-                response = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
+                response = self._send_command(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
             except Exception as e:
                 raise Exception("Failed to configure SSL context ID")
             
@@ -440,25 +477,25 @@ class Eg91Sender():
 
             try:
                 # Set Server Name Indication feature 
-                response = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
+                response = self._send_command(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
             except Exception as e:
                 raise Exception("Failed to configure SSL Server Name Indication feature")
             
             try:
                 # Set the URL which will be accessed
-                response = self._send_command_interrupt(f'AT+QHTTPURL={len(url)},{timeout}') 
+                response = self._send_command(f'AT+QHTTPURL={len(url)},{timeout}') 
             except Exception as e:
                 raise Exception("Failed to set HTTPS URL")
             
             try:
                 # Send the URL which will be accessed
-                response  = self._send_command_interrupt(url) 
+                response  = self._send_command(url) 
             except Exception as e:
                 raise Exception("Failed to send URL")
 
             
             if headers:
-                regex_path = re.compile("https?://([a-zA-Z0-9-\.]+)(/[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]*)?")
+                regex_path = re.compile(self.URL_REGEX)
 
                 match = regex_path.search(url)
                 host=None
@@ -468,7 +505,7 @@ class Eg91Sender():
                 if match:
                     host = match.group(1)
                     try:
-                        path = match.group(2) if match.group(2) else "/"
+                        path = match.group(3) if match.group(3) else "/"
                     except Exception as e:
                         path = "/"
                 
@@ -492,13 +529,13 @@ class Eg91Sender():
             
             try:
                 # Send HTTPS GET request
-                response = self._send_command_interrupt(qhttpget_cmd)   
+                response = self._send_command(qhttpget_cmd)   
             except Exception as e:
                 raise Exception(f"Failed to initiate HTTPS GET")
 
             if headers:
                 try:
-                    response = self._send_command_interrupt(header_str)
+                    response = self._send_command(header_str)
                 except Exception as e:
                     raise Exception("Failed to send URL headers")
             
@@ -514,7 +551,7 @@ class Eg91Sender():
             
             
             try:
-                response = self._send_command_interrupt(f'AT+QHTTPREAD={timeout}')
+                response = self._send_command(f'AT+QHTTPREAD={timeout}')
             except Exception as e:
                 raise Exception("Failed to read HTTPS GET response")
             
@@ -557,21 +594,21 @@ class Eg91Sender():
             
             try:
                 # Configure the PDP context ID
-                response = self._send_command_interrupt(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
+                response = self._send_command(f'AT+QHTTPCFG="contextid",{self.PDP_CTXID}')
             except Exception as e:
                 raise Exception("Failed to configure HTTP context ID")
 
             if headers:
                 try:
                     # Allow to output HTTPS request header
-                    response = self._send_command_interrupt('AT+QHTTPCFG="requestheader",1')
+                    response = self._send_command('AT+QHTTPCFG="requestheader",1')
                 except Exception as e:
                     raise Exception("Failed to configure request header")
 
             if not headers:
                 try:
                     # Set content type
-                    response = self._send_command_interrupt(
+                    response = self._send_command(
                         f'AT+QHTTPCFG="contenttype",{self.HTTP_CONTENT_TYPES[content_type]}'
                     )
                 except Exception as e:
@@ -587,7 +624,7 @@ class Eg91Sender():
 
             try:
                 # Set ssl context id
-                response = self._send_command_interrupt(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
+                response = self._send_command(f'AT+QHTTPCFG="sslctxid",{self.HTTPS_SSL_CTXID}')
             except Exception as e:
                 raise Exception("Failed to configure SSL context ID")
             
@@ -614,24 +651,24 @@ class Eg91Sender():
 
             try:
                 # Set Server Name Indication feature 
-                response = self._send_command_interrupt(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
+                response = self._send_command(f'AT+QSSLCFG="sni",{self.HTTPS_SSL_CTXID},1')  #1 to enable SNI, 0 to disable
             except Exception as e:
                 raise Exception("Failed to configure SSL Server Name Indication feature")
             
             try:
                 # Set the URL which will be accessed
-                response = self._send_command_interrupt(f'AT+QHTTPURL={len(url)},{timeout}')
+                response = self._send_command(f'AT+QHTTPURL={len(url)},{timeout}')
             except Exception as e:
                 raise Exception("Failed to set HTTPS URL")
             
             try:
                 # Send the URL which will be accessed
-                response  = self._send_command_interrupt(url) 
+                response  = self._send_command(url) 
             except Exception as e:
                 raise Exception("Failed to send URL")
 
             if headers:
-                regex_path = re.compile("https?://([a-zA-Z0-9-\.]+)(/[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]*)?")
+                regex_path = re.compile(self.URL_REGEX)
 
                 match = regex_path.search(url)
                 host=None
@@ -641,7 +678,7 @@ class Eg91Sender():
                 if match:
                     host = match.group(1)
                     try:
-                        path = match.group(2) if match.group(2) else "/"
+                        path = match.group(3) if match.group(3) else "/"
                     except Exception as e:
                         path = "/"
                 
@@ -663,7 +700,7 @@ class Eg91Sender():
 
             try:
                 # Send HTTPS POST request
-                response = self._send_command_interrupt(f'AT+QHTTPPOST={len(body)},{timeout},{timeout}',wait_time=10000) 
+                response = self._send_command(f'AT+QHTTPPOST={len(body)},{timeout},{timeout}',wait_time=10000) 
             except Exception as e:
                 raise Exception(f"Failed to initiate HTTPS POST")
 
@@ -683,7 +720,7 @@ class Eg91Sender():
                     raise Exception("Failed to send HTTPS POST body")
             
             try:
-                response = self._send_command_interrupt(f'AT+QHTTPREAD={timeout}')
+                response = self._send_command(f'AT+QHTTPREAD={timeout}')
             except Exception as e:
                 raise Exception("Failed to read HTTPS POST response")
             
@@ -746,7 +783,7 @@ class Eg91Sender():
             Logging.log_debug("Closing HTTPS connection")
             
             # Stop HTTP service
-            response = self._send_command_interrupt("AT+QHTTPSTOP")
+            response = self._send_command("AT+QHTTPSTOP")
 
             Logging.log_debug("HTTPS connection closed")
             

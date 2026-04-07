@@ -145,7 +145,7 @@ class AudioAliNode():
             self._initialize_LTE_module()
             self._deinitialize_LTE_module()
             
-
+            self.z_offset="+0000"   #in formato ±HHMM
             self._last_clock_synchronization_time=time.time()
             self._last_logs_upload_time=time.time()
             self._last_configuration_download_time=time.time()
@@ -218,11 +218,8 @@ class AudioAliNode():
         wav_chunk=wav_header+wav_data
         return wav_chunk
 
-    def _send_chunk_to_server(self, chunk):
-        #endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/audio"
-        response = self.lte_sender.https_post_request(url=self.CONFIG["AUDIO_ENDPOINT"],
-                                                      body=chunk,
-                                                      content_type="application/octet-stream",
+    def _test_request(self):
+        response = self.lte_sender.https_get_request(url="https://webhook.site/47d1b971-ac5e-448e-b33b-5b1f49e608b3",
                                                       headers={"X-API-KEY": self.API_KEY})
         #response = self.LTESender.https_get_request(url=endpoint)
         if response:
@@ -232,7 +229,7 @@ class AudioAliNode():
     
     def _clock_synchronization(self):
         try:
-            current_time, _ = self.lte_sender.get_time()
+            current_time, dst_flag = self.lte_sender.get_time()
             if current_time:
                 regex_string=ure.compile(
                     "(\d\d\d\d)/(\d\d)/(\d\d),"   # yyyy/MM/dd
@@ -250,44 +247,21 @@ class AudioAliNode():
                 hour   = int(m.group(4))
                 minute = int(m.group(5))
                 second = int(m.group(6))
+                zz = int(m.group(7))
+                sign = "+" if zz >= 0 else "-"
+                abs_zz = abs(zz)
+                total_minutes = abs_zz * 15
+                hours = total_minutes // 60
+                minutes = total_minutes % 60
+                self.z_offset = "{}{:02d}{:02d}".format(sign, hours, minutes)
+
 
                 rtc = RTC()
                 rtc.datetime((
-                    year, month, day, 0,  # weekday = 0, lo puoi calcolare se vuoi
+                    year, month, day, 0,  # weekday = 0
                     hour, minute, second,
                     0                     # subseconds
                 ))
-
-                '''
-                zz     = int(m.group(7))
-
-                offset_seconds_to_utc = zz * 15 * 60
-
-                epoch_local = time.mktime((
-                    year,
-                    month,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    0,   # weekday (ignorato)
-                    0    # yearday (ignorato)
-                ))
-
-                epoch_utc = epoch_local - offset_seconds_to_utc
-
-                tm = time.localtime(epoch_utc)
-                
-
-                rtc = RTC()
-
-                rtc.datetime((
-                    tm[0], tm[1], tm[2], 0,  # weekday = 0, lo puoi calcolare se vuoi
-                    tm[3], tm[4], tm[5],
-                    0                     # subseconds
-                ))
-
-                '''
 
                 self._last_clock_synchronization_time=time.time()
                 Logging.log_info(f"Local clock synchronized: {self._get_current_time()}")
@@ -299,7 +273,7 @@ class AudioAliNode():
     
     def _get_current_time(self):
         tm=time.localtime(time.time())
-        current_time = "{:04d}/{:02d}/{:02d},{:02d}:{:02d}:{:02d}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5])
+        current_time = "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}{}".format(tm[0], tm[1], tm[2], tm[3], tm[4], tm[5], self.z_offset)
         return current_time
     
     def _is_clock_synchronized(self):
@@ -307,6 +281,18 @@ class AudioAliNode():
         current_year = time.localtime(current_time)[0]
         return (((current_time-self._last_clock_synchronization_time) <= self.CONFIG["TIME_OUT_OF_SYNC"]) and (current_year>self.CONFIG["MIN_YEAR_FOR_SYNC_CHECK"]))
     
+    def _send_chunk_to_server(self, chunk):
+        #endpoint="http://ec2-18-197-151-12.eu-central-1.compute.amazonaws.com:8443/audio"
+        response = self.lte_sender.https_post_request(url=self.CONFIG["AUDIO_ENDPOINT"],
+                                                        body=chunk,
+                                                        content_type="application/octet-stream",
+                                                        headers={"X-API-KEY": self.API_KEY})
+        #response = self.LTESender.https_get_request(url=endpoint)
+        if response:
+            Logging.log_info("Response: {}".format(response))
+        else:
+            raise Exception("An error occurred while sending the chunk to the server")
+
     def _send_logs_to_server(self):
         if (time.time()-self._last_logs_upload_time) >= self.CONFIG["LOG_UPLOAD_PERIOD"]:
             try:
@@ -387,18 +373,26 @@ class AudioAliNode():
     #Da usare solo per test
     def test_start(self):
         Logging.log_info(f"Starting test at time: {self._get_current_time()}")
-        try:
-            #self._initialize_LTE_module()
-            #if self.lte_sender:
-                chunk=self._get_audio_chunk()
-                self.sd_buffer.enqueue(chunk)
-                #self._send_chunk_to_server(chunk)
-                #self.sd_buffer.dequeue()
-                #self._send_logs_to_server()
-                #self._update_configuration()
-                #self._deinitialize_LTE_module()
-        except Exception as e:
-            Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
+        if True:
+            try:
+                self._initialize_LTE_module()
+                if self.lte_sender:
+                    #chunk=self._get_audio_chunk()
+                    #self.sd_buffer.enqueue(chunk)
+                    #self._send_chunk_to_server(chunk)
+                    #self.sd_buffer.dequeue()
+                    self._send_logs_to_server()
+                    self._update_configuration()
+                    #self._test_request()
+                    self._deinitialize_LTE_module()
+            except KeyboardInterrupt as k:
+                #break
+                pass
+            except Exception as e:
+                Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
+            print("Sleeping...")
+            time.sleep(10)
+            print("Awake!")
 
 
 if __name__ == "__main__":

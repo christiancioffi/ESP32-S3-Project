@@ -17,6 +17,7 @@ class ATCommandsParser():
         ("AT+QPOWD[=<n>]","AT\+QPOWD(=\d)?"),
         ("AT+CREG?","AT\+CREG\?"),
         ("AT+CPIN?","AT\+CPIN\?"),
+        ("AT+CFUN=<fun>[,<rst>]","AT\+CFUN=[0-5](,[0-1])?"),
         ("AT+QICSGP=<contextID>[,<context_type>,<APN>[,<username>,<password>[,<authentication>]]]","AT\+QICSGP=\d(\d)?(,[1-3],\".*\"(,\".*\",\".*\"(,[0-3])?)?)?"),
         ("AT+QIACT?","AT\+QIACT\?"),
         ("AT+QIACT=<contextID>","AT\+QIACT=\d(\d)?"),
@@ -31,7 +32,7 @@ class ATCommandsParser():
         ("AT+QHTTPREAD[=<wait_time>]","AT\+QHTTPREAD(=\d+)?"),
         ("AT+QHTTPPOST=<data_length>[,<input_time>,<rsptime>]","AT\+QHTTPPOST=\d+(,\d+,\d+)?"),
         ("AT+QHTTPSTOP","AT\+QHTTPSTOP"),
-        ("URL","https?://([a-zA-Z0-9-\.]+)(/[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]*)?"),
+        ("URL","https?://([a-zA-Z0-9-\.]+)(:[0-9]+)?(/[a-zA-Z0-9\-._~!$&'()*+,;=:@/?#%]*)?"),
         ("POST_BODY",".+")
     ]
 
@@ -41,6 +42,7 @@ class ATCommandsParser():
         "AT+QPOWD[=<n>]": "\r\nOK\r\n\r\nPOWERED DOWN\r\n",
         'AT+CREG?': f"\r\n\+CREG: \d+,\d+(,\"{"[0-9a-f]"*4}\",\"{"[0-9a-f]"*4}{"[0-9a-f]?"*3}\"(,\d+)?)?\r\n\r\nOK\r\n",
         'AT+CPIN?': "\r\n\+CPIN: (.+)\r\n\r\nOK\r\n",
+        "AT+CFUN=<fun>[,<rst>]": "\r\nOK\r\n",
         'AT+QICSGP=<contextID>[,<context_type>,<APN>[,<username>,<password>[,<authentication>]]]': "\r\nOK\r\n",
         'AT+QIACT?': f"(\r\n\+QIACT: \d(\d)?,\d,\d(,\"{_simplest_ip_pattern}\")?\r\n)?\r\nOK\r\n",
         'AT+QIACT=<contextID>': "\r\nOK\r\n",

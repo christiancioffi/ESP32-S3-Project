@@ -3,6 +3,7 @@ import asyncio
 from Logging import Logging
 from at_commands_parser import ATCommandsParser
 import time
+from timeout_exception import TimeoutException
 
 class UARTRXManager():
 
@@ -124,7 +125,7 @@ class UARTRXManager():
             self._reset_status()
         else:                       #Timeout occurred
             self._reset_status()
-            raise Exception(f"Timeout occurred while waiting for a response")
+            raise TimeoutException()
 
         return response, success
     

@@ -4,8 +4,8 @@
   "TIME_OUT_OF_SYNC": 86400,
   "LOG_UPLOAD_PERIOD": 43200,
   "CONFIGURATION_DOWNLOAD_PERIOD": 43200,
-  "AUDIO_ENDPOINT": "https://tesi.aliagrid.com/audio",
-  "LOGS_ENDPOINT": "https://tesi.aliagrid.com/logs",
-  "CONFIGURATION_ENDPOINT": "https://tesi.aliagrid.com/configuration",
+  "AUDIO_ENDPOINT": "http://ec2-3-122-216-71.eu-central-1.compute.amazonaws.com:8443/audio",
+  "LOGS_ENDPOINT": "http://ec2-3-122-216-71.eu-central-1.compute.amazonaws.com:8443/logs",
+  "CONFIGURATION_ENDPOINT": "http://ec2-3-122-216-71.eu-central-1.compute.amazonaws.com:8443/configuration",
   "MIN_YEAR_FOR_SYNC_CHECK": 2020
 }

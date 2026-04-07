@@ -10,10 +10,10 @@ services:
     environment:
       - API_KEY=${API_KEY}
       - ADMIN_KEY=${ADMIN_KEY}
-      - MYSQL_HOST=${MYSQL_HOST}
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./AudioSamples:/app/AudioSamples
@@ -23,23 +23,22 @@ services:
       db-server:
         condition: service_healthy
   db-server:
-    image: mysql:latest
-    container_name: db_server
+    image: postgres:latest
+    container_name: db-server
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - ./db_data:/var/lib/mysql
+      - ./postgres_data:/var/lib/postgresql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql # Script per creare la tabella
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s  # Controlla ogni 10 secondi
       timeout: 5s    # Tempo massimo per il check
       retries: 5     # Quante volte riprovare prima di darsi per vinto
-      start_period: 15s # Dà a MySQL 15 secondi per avviarsi prima di iniziare i controlli
+      start_period: 15s # Dà a PostgreSQL 15 secondi per avviarsi prima di iniziare i controlli
   grafana:
     image: grafana/grafana-oss:latest
     container_name: grafana

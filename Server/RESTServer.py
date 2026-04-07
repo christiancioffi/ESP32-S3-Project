@@ -8,17 +8,18 @@ import hashlib
 import json
 from functools import wraps
 from threading import Lock
-import mysql.connector
-from datetime import datetime
+import psycopg
+from psycopg.rows import dict_row
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-db_config = {
-    'host': os.getenv('MYSQL_HOST'),
-    'user': os.getenv('MYSQL_USER'),
-    'password': os.getenv('MYSQL_PASSWORD'),
-    'database': os.getenv('MYSQL_DATABASE'),
-    'port': 3306
+DB_PARAMS = {
+    'host': os.getenv('POSTGRES_HOST'),
+    'user': os.getenv('POSTGRES_USER'),
+    'password': os.getenv('POSTGRES_PASSWORD'),
+    'dbname': os.getenv('POSTGRES_DB'),
+    'port': 5432
 }
 
 
@@ -32,11 +33,12 @@ API_KEY=os.environ.get('API_KEY')
 ADMIN_KEY=os.environ.get('ADMIN_KEY')
 config_lock = Lock()
 METADATA_KEYS = ["tmst", "noId", "blvl", "rmsv"]
-DATE_FORMAT="%Y/%m/%d,%H:%M:%S"
+# Formato ISO 8601 Standard
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 TARGET_DOMAIN = "tesi.aliagrid.com"
 REDIRECT_TARGET = f"https://{TARGET_DOMAIN}"
 
-@app.before_request
+@app.before_request      
 def enforce_domain_and_https():
     # 1. Otteniamo l'host richiesto (es. "localhost:8443" o "123.45.67.89")
     requested_host = request.host.split(':')[0]  # Rimuove la porta se presente
@@ -81,9 +83,9 @@ def admin_key_required(f):
 
 def get_db_connection():
     try:
-        conn = mysql.connector.connect(**db_config)
+        conn = psycopg.connect(**DB_PARAMS, row_factory=dict_row)
         return conn
-    except mysql.connector.Error as err:
+    except psycopg.Error as err:
         print(f"Connection error: {err}")
         return None
 
@@ -357,7 +359,7 @@ def update_configuration():
             "message": str(e)
         }), 500
 
-def insert_chunk_into_db(filename: str, timestamp: datetime, battery_level: int, node_id: str, rms: float):
+def insert_chunk_into_db(filename: str, timestamp: str, battery_level: int, node_id: str, rms: float):
     db=None
     cursor=None
     
@@ -384,7 +386,7 @@ def insert_chunk_into_db(filename: str, timestamp: datetime, battery_level: int,
         cursor.execute(sql, values)
         db.commit()
         print(f"Insert executed successfully")
-    except mysql.connector.Error as err:
+    except psycopg.Error as err:
         print(f"Error during insert: {err}")
         db.rollback()
         raise Exception(f"Database insert error: {err}")
@@ -414,13 +416,13 @@ def insert_event_into_db(event_type):
         VALUES (%s, %s)
         """
 
-    current_time = datetime.now().strftime(DATE_FORMAT)
+    current_time = datetime.now(timezone.utc).strftime(DATE_FORMAT)
 
     try:
         cursor.execute(sql, (event_type, current_time))
         db.commit()
         print(f"Insert executed successfully")
-    except mysql.connector.Error as err:
+    except psycopg.Error as err:
         print(f"Error during insert: {err}")
         db.rollback()
         #raise Exception(f"Database insert error: {err}")
