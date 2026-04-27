@@ -142,10 +142,10 @@ class AudioAliNode():
             #self._get_battery_level()
 
             # -----------------------CLOCK SYNCHRONIZATION AT STARTUP-----------------------
+            self.z_offset="+0000"   #in formato ±HHMM
             self._initialize_LTE_module()
             self._deinitialize_LTE_module()
             
-            self.z_offset="+0000"   #in formato ±HHMM
             self._last_clock_synchronization_time=time.time()
             self._last_logs_upload_time=time.time()
             self._last_configuration_download_time=time.time()
@@ -314,6 +314,9 @@ class AudioAliNode():
             else:
                 raise Exception("An error occurred while downloading the configuration from the server")
     
+    def _is_configuration_stale(self):
+        return (time.time()-self._last_configuration_download_time) >= self.CONFIG["CONFIGURATION_DOWNLOAD_PERIOD"]
+
     # Funzione principale 
     def start(self):
         Logging.log_info(f"Starting main loop at time: {self._get_current_time()}")
@@ -370,6 +373,39 @@ class AudioAliNode():
             time.sleep(self.CONFIG["IDLE_TIME"])
             Logging.log_info("Awake!")
 
+       # Funzione principale 
+    
+    def start_without_sending_to_the_server(self):
+        Logging.log_info(f"Starting main loop at time: {self._get_current_time()}")
+        while True:
+            # Controllo che il clock sia sufficientemente sincronizzato, altrimenti lo sincronizzo prima di fare qualsiasi altra operazione
+            if self._is_clock_synchronized():
+                try:
+                    # Catturo un chunk audio di 5s
+                    chunk=self._get_audio_chunk()
+                    # Salvo il chunk catturato sulla SD
+                    self.sd_buffer.enqueue(chunk)
+                    if self._is_configuration_stale() and self._is_battery_sufficient():
+                        self._initialize_LTE_module()
+                        if self.lte_sender:
+                            Logging.log_info("Network connection established and battery sufficient, sending data...")
+                            # Aggiorno la configurazione scaricandola dal server (se sono passati più di CONFIGURATION_DOWNLOAD_PERIOD dall'ultimo aggiornamento)
+                            self._update_configuration()
+                            # Deinizializzo e spengo il modulo LTE, per risparmiare batteria
+                            self._deinitialize_LTE_module()
+                except Exception as e:
+                    Logging.log_error("A problem occurred during this iteration: \"{}\"".format(e))
+            else:
+                Logging.log_info("Clock NOT synchronized, trying to synchronize it...")
+                # L'accensione e inizializzazione del modulo LTE sincronizza in automatico il clock
+                self._initialize_LTE_module()
+                self._deinitialize_LTE_module()
+
+            # Attendo un certo tempo prima iniziare nuovamente un ciclo di cattura e invio dati
+            Logging.log_info("Sleeping...")
+            time.sleep(self.CONFIG["IDLE_TIME"])
+            Logging.log_info("Awake!")
+
     #Da usare solo per test
     def test_start(self):
         Logging.log_info(f"Starting test at time: {self._get_current_time()}")
@@ -400,7 +436,7 @@ if __name__ == "__main__":
     try:
         alinode=AudioAliNode()
         #alinode.sd_buffer.clear_buffer()
-        alinode.start()
+        alinode.start_without_sending_to_the_server()
         #alinode.test_start()
     except (KeyboardInterrupt, Exception) as e:
         sys.print_exception(e)
