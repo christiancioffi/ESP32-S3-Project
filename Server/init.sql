@@ -15,3 +15,10 @@ CREATE TABLE IF NOT EXISTS Events (
     timestamp TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS Predictions (
+    ID SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    prediction FLOAT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_predictions_timestamp ON Predictions (timestamp);

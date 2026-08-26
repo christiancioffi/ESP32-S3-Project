@@ -11,6 +11,8 @@ from threading import Lock
 import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime, timezone
+import csv
+from io import StringIO
 
 app = Flask(__name__)
 
@@ -22,6 +24,7 @@ DB_PARAMS = {
     'port': 5432
 }
 
+#TODO: rimettere HTTPS
 
 SERVER_PORT=8443
 BASE_DIR = "."
@@ -35,7 +38,8 @@ config_lock = Lock()
 METADATA_KEYS = ["tmst", "noId", "blvl", "rmsv"]
 # Formato ISO 8601 Standard
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
-TARGET_DOMAIN = "tesi.aliagrid.com"
+PREDICTIONS_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"
+TARGET_DOMAIN = "tesi.aliagrid.com"  # "ec2-3-122-216-71.eu-central-1.compute.amazonaws.com"
 REDIRECT_TARGET = f"https://{TARGET_DOMAIN}"
 
 @app.before_request      
@@ -56,6 +60,25 @@ def enforce_domain_and_https():
         new_url = new_url.rstrip('?')
         
         return redirect(new_url, code=301) # 301 = Permanent Redirect
+
+'''
+@app.before_request      
+def enforce_https():
+    # 2. Controlliamo se la connessione è sicura (HTTPS)
+    # Nota: Se sei dietro un proxy (Docker/Nginx), usa request.is_secure o 'X-Forwarded-Proto'
+    is_https = request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https'
+    
+    # 3. Logica di Redirect
+    # Reindirizza se NON è HTTPS O se il dominio non coincide
+    if not is_https:
+        # Costruiamo l'URL finale mantenendo il percorso (es. /configuration)
+        new_url = f"https://{TARGET_DOMAIN}{request.full_path}"
+        # Rimuove il punto interrogativo finale se non ci sono parametri
+        new_url = new_url.rstrip('?')
+        
+        return redirect(new_url, code=301) # 301 = Permanent Redirect
+'''
+
 
 def api_key_required(f):
     @wraps(f)
@@ -276,6 +299,92 @@ def test_audio():
             "status": "error",
             "message": str(e)
         }), 500
+
+
+@app.route('/predictions', methods=['POST'])
+@api_key_required
+def predictions():
+    try:
+        raw_data = request.get_data().decode("utf-8")
+
+        if not raw_data.strip():
+            raise Exception("Empty request body")
+
+        rows = []
+        reader = csv.reader(StringIO(raw_data))
+
+        header = next(reader, None)  # salta la riga di intestazione
+        if header is None:
+            raise Exception("Empty request body")
+
+        for i, row in enumerate(reader):
+            if len(row) != 2:
+                raise Exception(f"Invalid CSV row at line {i}: expected 2 columns, got {len(row)}")
+
+            timestamp_str, prediction_str = row[0].strip(), row[1].strip()
+
+            try:
+                datetime.strptime(timestamp_str, PREDICTIONS_DATE_FORMAT)
+            except Exception:
+                raise Exception(f"Invalid timestamp format at line {i}: {timestamp_str}")
+
+            try:
+                prediction_val = float(prediction_str)
+            except Exception:
+                raise Exception(f"Invalid prediction value at line {i}: {prediction_str}")
+
+            rows.append((timestamp_str, prediction_val))
+
+        if not rows:
+            raise Exception("No valid rows found in CSV")
+
+        #print(f"Rows: {rows}")
+
+        insert_predictions_into_db(rows)
+        insert_event_into_db("predictions_received")
+
+        return jsonify({
+            "status": "Predictions saved successfully",
+            "rows_inserted": len(rows)
+        })
+
+    except Exception as e:
+        print(f"caught exception {type(e).__name__} {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 400
+
+
+def insert_predictions_into_db(rows):
+    db = None
+    cursor = None
+
+    db = get_db_connection()
+    if not db:
+        raise Exception("Database connection failed")
+
+    cursor = db.cursor()
+
+    sql = """
+        INSERT INTO Predictions (timestamp, prediction)
+        VALUES (%s, %s)
+        """
+
+    try:
+        cursor.executemany(sql, rows)
+        db.commit()
+        print(f"Insert executed successfully ({len(rows)} rows)")
+    except psycopg.Error as err:
+        print(f"Error during insert: {err}")
+        db.rollback()
+        raise Exception(f"Database insert error: {err}")
+    finally:
+        if cursor:
+            cursor.close()
+        if db:
+            db.close()
+
 
 @app.route('/logs', methods=['POST'])
 @api_key_required
